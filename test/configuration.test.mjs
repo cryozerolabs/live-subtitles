@@ -1,0 +1,240 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { SettingsStore, updateSettings, publicSettings, connection, settingsReady, endpoint } from '../src/configuration.js';
+
+const ASR_KEY = 'fixture-asr-key';
+const TRANSLATION_KEY = 'fixture-translation-key';
+const env = {
+  ASR_BASE_URL: 'https://speech.example/custom/v2', ASR_API_KEY: ASR_KEY, ASR_MODEL: 'speech-fixture',
+  TRANSLATION_BASE_URL: 'https://text.example/gateway', TRANSLATION_API_KEY: TRANSLATION_KEY, TRANSLATION_MODEL: 'text-fixture',
+};
+
+function directory(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'subtitles-settings-test-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  return dir;
+}
+const fixture = t => new SettingsStore(directory(t), env);
+function rejectsWithoutEcho(run, forbidden) {
+  assert.throws(run, error => {
+    assert.equal(error.status, 400);
+    for (const value of forbidden) assert.equal(error.message.includes(value), false);
+    return true;
+  });
+}
+
+test('unconfigured settings have no provider, model or credentials by default', t => {
+  const store = new SettingsStore(directory(t), {});
+  assert.deepEqual(store.value, {
+    version: 2,
+    asr: { baseURL: '', apiKey: '', model: '' },
+    translation: { baseURL: '', apiKey: '', model: '', useAsrConnection: false },
+    networkAddress: '',
+  });
+  assert.equal(settingsReady(store.value), false);
+  assert.equal(fs.existsSync(store.file), false);
+  assert.deepEqual(publicSettings(store.value), {
+    asr: { baseURL: '', model: '', hasApiKey: false },
+    translation: { baseURL: '', model: '', hasApiKey: false, useAsrConnection: false },
+    networkAddress: '', configured: false,
+  });
+});
+
+test('protocol-neutral environment groups are independent and saved settings override initial values', t => {
+  const dir = directory(t), store = new SettingsStore(dir, env);
+  assert.deepEqual(connection(store.value, 'asr'), { baseURL: env.ASR_BASE_URL, apiKey: ASR_KEY, model: env.ASR_MODEL });
+  assert.deepEqual(connection(store.value, 'translation'), { baseURL: env.TRANSLATION_BASE_URL, apiKey: TRANSLATION_KEY, model: env.TRANSLATION_MODEL });
+  const next = updateSettings(store.value, {
+    asr: { baseURL: 'http://localhost:8000/custom', apiKey: 'fixture-local-key', model: 'saved-speech' },
+    translation: { baseURL: 'http://localhost:9000/text', apiKey: 'fixture-other-key', model: 'saved-text' },
+    networkAddress: '192.168.1.8',
+  });
+  store.write(next);
+  const reopened = new SettingsStore(dir, { ...env, ASR_API_KEY: 'fixture-replaced-env-key', TRANSLATION_MODEL: 'replaced-env-model' });
+  assert.deepEqual(reopened.value, next);
+  assert.equal(fs.statSync(store.file).mode & 0o777, 0o600);
+  assert.equal(fs.existsSync(store.file + '.tmp'), false);
+});
+
+test('same-origin new environment groups do not implicitly copy the recognition key', t => {
+  const store = new SettingsStore(directory(t), { ...env, TRANSLATION_BASE_URL: env.ASR_BASE_URL, TRANSLATION_API_KEY: undefined });
+  assert.equal(store.value.translation.useAsrConnection, false);
+  assert.equal(store.value.translation.apiKey, '');
+  assert.equal(connection(store.value, 'translation').apiKey, '');
+});
+
+test('legacy flat settings migrate once, preserve keys, strip endpoint suffixes and redact secrets', t => {
+  const dir = directory(t), file = path.join(dir, 'settings.json');
+  const saved = {
+    asrEndpoint: 'https://fixture.example/custom/audio/transcriptions', asrKey: ASR_KEY, asrModel: 'legacy-speech',
+    llmEndpoint: 'https://fixture.example/custom/chat/completions', llmKey: ASR_KEY, llmModel: 'legacy-text',
+    meetingTitle: 'Old title', meetingStartTime: '09:00', meetingEndTime: '10:00', vocabulary: 'Old word', mode: 'ming',
+    networkAddress: '192.168.1.8',
+  };
+  fs.writeFileSync(file, JSON.stringify(saved), { mode: 0o644 });
+  const store = new SettingsStore(dir, env), migrated = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.equal(migrated.version, 2);
+  assert.deepEqual(Object.keys(migrated).sort(), ['asr', 'networkAddress', 'translation', 'version']);
+  assert.deepEqual(store.value.asr, { baseURL: 'https://fixture.example/custom', apiKey: ASR_KEY, model: 'legacy-speech' });
+  assert.deepEqual(store.value.translation, { baseURL: 'https://fixture.example/custom', apiKey: ASR_KEY, model: 'legacy-text', useAsrConnection: true });
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  const visible = publicSettings(store.value), serialized = JSON.stringify(visible);
+  assert.equal(visible.asr.hasApiKey, true);
+  assert.equal(visible.translation.hasApiKey, true);
+  assert.equal(Object.hasOwn(visible.asr, 'apiKey'), false);
+  assert.equal(Object.hasOwn(visible.translation, 'apiKey'), false);
+  assert.equal(serialized.includes(ASR_KEY), false);
+  assert.equal(serialized.includes(TRANSLATION_KEY), false);
+  for (const field of ['meetingTitle', 'meetingStartTime', 'meetingEndTime', 'vocabulary', 'mode']) assert.equal(Object.hasOwn(migrated, field), false);
+  assert.deepEqual(new SettingsStore(dir, {}).value, migrated);
+});
+
+test('legacy environment URLs keep their previous v1 expansion and full-endpoint meaning', t => {
+  for (const [input, expected] of [
+    ['https://legacy.example', 'https://legacy.example/v1'],
+    ['https://legacy.example/custom', 'https://legacy.example/custom/v1'],
+    ['https://legacy.example/v1/', 'https://legacy.example/v1'],
+    ['https://legacy.example/custom/audio/transcriptions', 'https://legacy.example/custom'],
+    ['https://legacy.example/custom/audio/transcriptions/', 'https://legacy.example/custom'],
+  ]) {
+    const store = new SettingsStore(directory(t), { MING_ASR_URL: input, MING_ASR_MODEL: 'legacy-speech', MING_API_KEY: ASR_KEY });
+    assert.equal(store.value.asr.baseURL, expected);
+    assert.equal(store.value.asr.apiKey, ASR_KEY);
+    assert.equal(store.value.asr.model, 'legacy-speech');
+  }
+  for (const [input, expected] of [
+    ['https://legacy.example', 'https://legacy.example/v1'],
+    ['https://legacy.example/custom', 'https://legacy.example/custom/v1'],
+    ['https://legacy.example/v1/', 'https://legacy.example/v1'],
+    ['https://legacy.example/custom/chat/completions', 'https://legacy.example/custom'],
+    ['https://legacy.example/custom/chat/completions/', 'https://legacy.example/custom'],
+  ]) {
+    const store = new SettingsStore(directory(t), { DEMO_LLM_URL: input, DEMO_LLM_MODEL: 'legacy-text', DEMO_LLM_KEY: TRANSLATION_KEY });
+    assert.equal(store.value.translation.baseURL, expected);
+    assert.equal(store.value.translation.apiKey, TRANSLATION_KEY);
+    assert.equal(store.value.translation.model, 'legacy-text');
+  }
+  const shared = new SettingsStore(directory(t), {
+    MING_ASR_URL: 'https://legacy.example', MING_ASR_MODEL: 'legacy-speech', MING_API_KEY: ASR_KEY,
+    DEMO_LLM_URL: 'https://legacy.example', DEMO_LLM_MODEL: 'legacy-text',
+  });
+  assert.equal(shared.value.translation.apiKey, ASR_KEY);
+});
+
+test('new Base URL environment fields override legacy names without adding v1', t => {
+  const store = new SettingsStore(directory(t), {
+    ...env, MING_ASR_URL: 'https://old.example', MING_ASR_MODEL: 'old-speech', MING_API_KEY: 'fixture-old-asr-key',
+    DEMO_LLM_URL: 'https://old.example', DEMO_LLM_MODEL: 'old-text', DEMO_LLM_KEY: 'fixture-old-text-key',
+  });
+  assert.equal(store.value.asr.baseURL, env.ASR_BASE_URL);
+  assert.equal(store.value.translation.baseURL, env.TRANSLATION_BASE_URL);
+  assert.equal(store.value.asr.model, env.ASR_MODEL);
+  assert.equal(store.value.translation.model, env.TRANSLATION_MODEL);
+  assert.equal(endpoint(store.value.asr.baseURL, 'asr'), env.ASR_BASE_URL + '/audio/transcriptions');
+  assert.equal(endpoint(store.value.translation.baseURL, 'translation'), env.TRANSLATION_BASE_URL + '/chat/completions');
+  assert.equal(endpoint('https://fixture.example', 'asr'), 'https://fixture.example/audio/transcriptions');
+  assert.equal(endpoint('https://fixture.example/custom/chat/completions/', 'translation'), 'https://fixture.example/custom/chat/completions');
+  assert.equal(endpoint('', 'asr'), '');
+});
+
+test('blank or omitted keys preserve credentials, explicit clear removes them and a new key replaces them', t => {
+  const previous = fixture(t).value;
+  for (const patch of [{ model: 'renamed' }, { apiKey: '' }, { apiKey: '   ' }]) {
+    const next = updateSettings(previous, { asr: patch, translation: patch });
+    assert.equal(next.asr.apiKey, ASR_KEY);
+    assert.equal(next.translation.apiKey, TRANSLATION_KEY);
+  }
+  const cleared = updateSettings(previous, { asr: { clearApiKey: true }, translation: { clearApiKey: true } });
+  assert.equal(cleared.asr.apiKey, '');
+  assert.equal(cleared.translation.apiKey, '');
+  const replaced = updateSettings(previous, { asr: { apiKey: 'fixture-next-asr-key' } });
+  assert.equal(replaced.asr.apiKey, 'fixture-next-asr-key');
+  assert.equal(previous.asr.apiKey, ASR_KEY);
+  rejectsWithoutEcho(() => updateSettings(previous, { asr: { apiKey: ASR_KEY, clearApiKey: true } }), [ASR_KEY]);
+});
+
+test('origin changes do not carry old keys while path changes retain same-origin credentials', t => {
+  const previous = fixture(t).value;
+  for (const baseURL of ['https://other.example/v1', 'http://speech.example/custom/v2', 'https://speech.example:9443/custom/v2']) {
+    assert.equal(updateSettings(previous, { asr: { baseURL } }).asr.apiKey, '');
+  }
+  assert.equal(updateSettings(previous, { asr: { baseURL: 'https://speech.example/another/path' } }).asr.apiKey, ASR_KEY);
+  assert.equal(updateSettings(previous, { translation: { baseURL: 'https://other.example/v1' } }).translation.apiKey, '');
+  const fresh = updateSettings(previous, { asr: { baseURL: 'https://other.example/v1', apiKey: 'fixture-new-origin-key' } });
+  assert.equal(fresh.asr.apiKey, 'fixture-new-origin-key');
+});
+
+test('explicit connection reuse keeps independent translation settings and its own model', t => {
+  const previous = fixture(t).value;
+  const shared = updateSettings(previous, { translation: { useAsrConnection: true, model: 'shared-text-model' } });
+  assert.deepEqual(connection(shared, 'translation'), { baseURL: env.ASR_BASE_URL, apiKey: ASR_KEY, model: 'shared-text-model' });
+  assert.equal(shared.translation.baseURL, env.TRANSLATION_BASE_URL);
+  assert.equal(shared.translation.apiKey, TRANSLATION_KEY);
+  assert.equal(shared.asr.model, env.ASR_MODEL);
+  const visible = publicSettings(shared);
+  assert.equal(visible.translation.baseURL, env.TRANSLATION_BASE_URL);
+  assert.equal(visible.translation.hasApiKey, true);
+  const independent = updateSettings(shared, { translation: { useAsrConnection: false } });
+  assert.deepEqual(connection(independent, 'translation'), { baseURL: env.TRANSLATION_BASE_URL, apiKey: TRANSLATION_KEY, model: 'shared-text-model' });
+});
+
+test('keyless compatible services can be configured and shared without inventing credentials', t => {
+  const blank = new SettingsStore(directory(t), {}).value;
+  const independent = updateSettings(blank, {
+    asr: { baseURL: 'http://localhost:8000/v1', model: 'local-speech' },
+    translation: { baseURL: 'http://localhost:9000/v1', model: 'local-text' },
+  });
+  assert.equal(settingsReady(independent), true);
+  assert.equal(publicSettings(independent).asr.hasApiKey, false);
+  assert.equal(publicSettings(independent).translation.hasApiKey, false);
+  const shared = updateSettings(blank, {
+    asr: { baseURL: 'http://localhost:8000/v1', model: 'local-speech' },
+    translation: { useAsrConnection: true, model: 'local-text' },
+  });
+  assert.equal(settingsReady(shared), true);
+  assert.equal(connection(shared, 'translation').apiKey, '');
+  assert.equal(publicSettings(shared).translation.baseURL, '');
+});
+
+test('invalid key characters are rejected without echoing submitted credentials', t => {
+  const previous = fixture(t).value;
+  for (const secret of ['fixture\nprivate', 'fixture\rprivate', 'fixture\u0000private', 'fixture\u007fprivate', 'fixture private', 'fixture-秘密', 'fixture-é']) {
+    rejectsWithoutEcho(() => updateSettings(previous, { asr: { apiKey: secret } }), [secret, 'private', '秘密']);
+    rejectsWithoutEcho(() => new SettingsStore(directory(t), { ...env, TRANSLATION_API_KEY: secret }), [secret, 'private', '秘密']);
+  }
+  rejectsWithoutEcho(() => updateSettings(previous, { translation: { apiKey: { secret: 'fixture-value' } } }), ['fixture-value']);
+});
+
+test('credential-bearing and non-HTTP URLs are rejected without exposing their contents', t => {
+  const previous = fixture(t).value;
+  for (const baseURL of [
+    'https://fixture-user:fixture-private@service.example/v1',
+    'https://service.example/v1?key=fixture-private',
+    'https://service.example/v1#fixture-private',
+    'ftp://service.example/fixture-private',
+    'fixture-private',
+  ]) {
+    rejectsWithoutEcho(() => endpoint(baseURL, 'asr'), ['fixture-private', 'fixture-user']);
+    rejectsWithoutEcho(() => updateSettings(previous, { translation: { baseURL } }), ['fixture-private', 'fixture-user']);
+  }
+});
+
+test('failed multi-group updates leave the previous value and saved file unchanged', t => {
+  const store = fixture(t);
+  store.write(store.value);
+  const previous = store.value, snapshot = structuredClone(previous), disk = fs.readFileSync(store.file, 'utf8');
+  Object.freeze(previous.asr); Object.freeze(previous.translation); Object.freeze(previous);
+  assert.throws(() => store.write(updateSettings(previous, {
+    asr: { model: 'would-change', apiKey: 'fixture-uncommitted-key' }, translation: { model: '' },
+  })), /翻译模型名/);
+  assert.equal(store.value, previous);
+  assert.deepEqual(store.value, snapshot);
+  assert.equal(fs.readFileSync(store.file, 'utf8'), disk);
+  assert.throws(() => updateSettings(previous, { asr: { model: '' } }), /识别模型名/);
+  assert.throws(() => updateSettings(previous, { translation: { useAsrConnection: 'true' } }), /布尔值/);
+  assert.throws(() => updateSettings(previous, { apiKey: 'fixture-unknown-key' }), /不支持的字段/);
+  assert.equal(fs.existsSync(store.file + '.tmp'), false);
+});

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#111014">
+  <link rel="icon" href="data:,">
+  <title>同声字幕</title>
+  <link rel="stylesheet" href="/fonts/fonts.css">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/watch.css">
+  <link rel="stylesheet" href="/stage.css">
+  <link rel="stylesheet" href="/workspace.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <div id="workspace" class="workspace">
+    <aside class="app-sidebar" aria-label="会议导航">
+      <div class="sidebar-top"><h1>会议记录</h1><button id="new-meeting" class="new-meeting-button"><span aria-hidden="true">＋</span>开始新会议</button></div>
+      <div class="sidebar-records"><p id="list-message" class="list-message">正在读取…</p><nav id="meeting-list" aria-label="会议记录列表"></nav><button id="meetings-more" class="list-more" hidden>加载更多</button></div>
+      <div class="sidebar-bottom"><button id="settings-open" class="sidebar-setting"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="15" cy="17" r="3"/></svg>设置</button></div>
+    </aside>
+    <main class="workspace-content">
+      <section id="new-panel" class="workspace-panel new-panel" aria-labelledby="new-heading">
+        <form id="new-meeting-form" class="new-meeting-form">
+          <img class="meeting-illustration" src="/art/listen-guide-v2.png" width="1536" height="1024" alt="讲话者面对麦克风自然交谈">
+          <h2 id="new-heading">新建会议</h2>
+          <label for="new-title">会议名称</label><input id="new-title" maxlength="120" placeholder="输入会议名称" autocomplete="off">
+          <p class="new-meeting-help">进入字幕页后，点击「开始收音」启用麦克风。</p>
+          <p id="new-error" class="form-error" role="alert" hidden></p>
+          <button id="create-meeting" class="primary-button" type="submit">开始会议<span aria-hidden="true"> →</span></button>
+        </form>
+      </section>
+      <section id="settings-panel" class="workspace-panel settings-panel" aria-labelledby="settings-heading" hidden>
+        <div class="panel-heading"><h2 id="settings-heading">设置</h2><p>服务配置保存在这台电脑上。</p></div>
+        <form id="settings-form" class="settings-content">
+          <fieldset><legend>语音识别</legend>
+            <label for="asr-base-url">Base URL</label><input id="asr-base-url" type="url" required autocomplete="off" spellcheck="false" placeholder="https://api.example.com/v1">
+            <label for="asr-api-key">API Key</label><input id="asr-api-key" type="password" autocomplete="off" spellcheck="false" aria-describedby="asr-key-help">
+            <p id="asr-key-help" class="field-help">留空保留已保存的密钥；无需密钥的本地服务可留空。</p>
+            <label class="checkbox-field" for="asr-clear-key"><input id="asr-clear-key" type="checkbox">清除已保存的 API Key</label>
+            <label for="asr-model">模型</label><input id="asr-model" required autocomplete="off" spellcheck="false">
+          </fieldset>
+          <fieldset><legend>字幕翻译</legend>
+            <label class="checkbox-field" for="translation-use-asr"><input id="translation-use-asr" type="checkbox">使用语音识别的 Base URL 和 API Key</label>
+            <div id="translation-connection">
+              <label for="translation-base-url">Base URL</label><input id="translation-base-url" type="url" required autocomplete="off" spellcheck="false" placeholder="https://api.example.com/v1">
+              <label for="translation-api-key">API Key</label><input id="translation-api-key" type="password" autocomplete="off" spellcheck="false" aria-describedby="translation-key-help">
+              <p id="translation-key-help" class="field-help">留空保留已保存的密钥；无需密钥的本地服务可留空。</p>
+              <label class="checkbox-field" for="translation-clear-key"><input id="translation-clear-key" type="checkbox">清除已保存的 API Key</label>
+            </div>
+            <label for="translation-model">模型</label><input id="translation-model" required autocomplete="off" spellcheck="false">
+          </fieldset>
+          <fieldset><legend>手机访问</legend><label for="network-address">局域网地址</label><select id="network-address"></select><p class="field-help">手机与电脑需连接同一 Wi-Fi。</p></fieldset>
+          <p id="settings-error" class="form-error" role="alert" hidden></p><p id="settings-saved" class="settings-saved" role="status" hidden>已保存</p>
+          <div class="settings-actions"><button id="settings-save" class="primary-button" type="submit">保存设置</button></div>
+        </form>
+      </section>
+      <section id="history-panel" class="workspace-panel history-panel" aria-labelledby="history-heading" hidden>
+        <header class="history-heading"><div><h2 id="history-heading">会议记录</h2><p id="history-recording" class="history-meta"></p></div><div class="history-actions"><a id="history-download" class="secondary-button">下载会议包</a><button id="history-delete" class="secondary-button danger-button" hidden>删除会议</button></div></header>
+        <nav id="history-languages" class="caption-languages" aria-label="历史字幕语言"><button data-language="zhHans" aria-pressed="true">中文</button><button data-language="en" aria-pressed="false">English</button><button data-language="yue" aria-pressed="false">粵語</button></nav>
+        <div id="history-transcript" class="transcript" aria-label="历史会议字幕" tabindex="0"><button id="history-older" class="older-button" hidden>加载更早字幕</button><p id="history-empty" class="transcript-empty" hidden>本场暂无字幕。</p></div>
+      </section>
+    </main>
+  </div>
+  <section id="live-screen" class="stage" aria-label="同声字幕" hidden>
+    <header class="head"><div class="event"><h1 id="meeting-title">未命名会议</h1></div><time id="clock"></time></header>
+    <section class="reading-area captions" aria-label="原文与译文">
+      <div class="caption-scroll" id="caption-scroll" tabindex="0"><div class="caption-feed" id="caption-feed" role="log" aria-live="polite"></div></div>
+      <p id="empty-status" class="stage-empty" hidden>点击下方「开始收音」</p>
+      <button id="back-latest" class="back-latest" hidden>回到最新 ↓</button>
+    </section>
+    <footer class="foot"><div class="foot-controls">
+      <nav id="caption-languages" class="caption-languages" aria-label="译文语言"><button data-language="zhHans" aria-pressed="true">中文</button><button data-language="en" aria-pressed="false">English</button><button data-language="yue" aria-pressed="false">粵語</button></nav>
+      <div class="controls-row"><div id="capture-meter" class="voice-meter" role="img" aria-label="麦克风未启用" data-state="ready"><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div><button id="toggle-capture" class="primary-button" disabled>开始收音</button><button id="end-meeting" class="secondary-button">结束</button></div>
+      <p id="capture-error" class="capture-error" role="alert" hidden></p>
+    </div><a class="qr-card" id="meeting-share" target="_blank" rel="noopener" aria-label="手机观看"><div class="qr-area"><img id="meeting-qr" width="184" height="184" alt="手机观看本场会议字幕的二维码" hidden><span id="qr-empty">正在准备二维码</span></div><span class="qr-copy"><span class="qr-prompt" lang="zh-CN">扫码跟随字幕</span><span class="qr-prompt" lang="en">Scan for live captions</span><span class="qr-prompt" lang="yue-Hant">掃碼睇字幕</span></span></a></footer>
+  </section>
+  <dialog id="end-dialog" aria-labelledby="end-heading"><div class="simple-dialog"><h2 id="end-heading">结束本次会议？</h2><p>将停止收音，处理剩余音频并保存录音和字幕。</p><div class="dialog-footer"><button id="end-cancel" class="button secondary">返回字幕</button><button id="end-confirm" class="button primary">结束并保存</button></div></div></dialog>
+  <dialog id="delete-dialog" aria-labelledby="delete-heading"><div class="simple-dialog"><h2 id="delete-heading">删除这场会议？</h2><p id="delete-copy"></p><p class="field-help">此操作无法撤销，已下载的会议包不受影响。</p><p id="delete-error" class="form-error" role="alert" hidden></p><div class="dialog-footer"><button id="delete-cancel" class="button secondary">取消</button><button id="delete-confirm" class="button danger-button">删除会议</button></div></div></dialog>
+</body>
+</html>

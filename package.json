@@ -1,0 +1,38 @@
+{
+  "name": "live-subtitles",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local live captions in Chinese, English and Cantonese",
+  "author": "CryoZeroLabs",
+  "homepage": "https://github.com/cryozerolabs/live-subtitles#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cryozerolabs/live-subtitles.git"
+  },
+  "bugs": {
+    "url": "https://github.com/cryozerolabs/live-subtitles/issues"
+  },
+  "license": "MIT",
+  "type": "module",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/*.test.mjs",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "archiver": "^8.0.0",
+    "dotenv": "18.0.3",
+    "express": "5.2.1",
+    "opencc-js": "1.4.2",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "eslint": "10.12.0",
+    "globals": "17.13.0"
+  }
+}

@@ -1,0 +1,78 @@
+# 服务配置
+
+识别与翻译分别使用 OpenAI 兼容接口。设置以能力命名，与具体厂商无关；默认不指定服务商、模型或 Key。
+
+## 字段
+
+| 字段 | 语音识别 `asr` | 字幕翻译 `translation` |
+| --- | --- | --- |
+| `baseURL` | 识别服务的基础地址 | 翻译服务的基础地址 |
+| `apiKey` | 识别服务 Key，可为空 | 翻译服务 Key，可为空 |
+| `model` | 支持音频转写的模型名 | 支持文本翻译与 JSON 输出的模型名 |
+| `useAsrConnection` | 不适用 | 为 `true` 时复用识别服务的 `baseURL` 和 Key |
+
+复用连接只影响请求使用的地址和 Key，翻译模型仍需独立填写。翻译的独立连接配置会保留，关闭复用后继续使用。读取设置返回各组保存的配置与 `hasApiKey`，不会把复用后的地址或 Key 写回翻译的独立配置。
+
+Base URL 使用完整的 `http://` 或 `https://` 地址，包含服务要求的路径。例如：
+
+```text
+Base URL: https://api.example.com/v1
+识别请求: https://api.example.com/v1/audio/transcriptions
+翻译请求: https://api.example.com/v1/chat/completions
+```
+
+应用不自动增加 `/v1`。本地服务的 Base URL 可以是 `http://localhost:8000/v1`，也可以使用该服务实际提供的其他路径。地址不接受内嵌用户名、密码、查询参数或片段。
+
+## Key 的保存与更新
+
+- Key 只发送给本地后端，由后端调用服务。读取设置返回 `hasApiKey`，不返回 Key 原文。
+- 在设置中不填写新 Key，保留同一服务来源的已有 Key。
+- 清除使用单独的清除操作，API 对应 `clearApiKey: true`。
+- 更换来源，即协议、主机或端口发生变化时，不自动把旧 Key 发给新来源；需要重新填写。
+- 无需鉴权的本地服务可以不配置 Key；请求不会发送空的 Bearer 凭据。
+- Key 须为无空格的可打印 ASCII 字符；配置校验和连接错误不回显凭据。
+- `data/settings.json` 是本机保存文件，包含实际 Key。不要提交、共享或作为会议包分发。备份时也需保护此文件。
+
+## 环境变量
+
+复制根目录的 `.env.example` 为 `.env` 后填写。服务始终读取项目根目录的 `.env`。环境变量提供初始值，应用保存的本地设置覆盖初始值；修改 `.env` 不会覆盖已经保存的设置。
+
+| 变量 | 用途 | 默认值 |
+| --- | --- | --- |
+| `ASR_BASE_URL` | 识别 Base URL | 空 |
+| `ASR_API_KEY` | 识别 Key | 空 |
+| `ASR_MODEL` | 识别模型 | 空 |
+| `TRANSLATION_BASE_URL` | 翻译 Base URL | 空 |
+| `TRANSLATION_API_KEY` | 翻译 Key | 空 |
+| `TRANSLATION_MODEL` | 翻译模型 | 空 |
+| `PORT` | HTTP 服务端口 | `8090` |
+| `DATA_DIR` | 数据目录 | 项目下的 `data/` |
+
+部署时可以使用进程环境变量，避免写入 `.env`。旧安装的扁平服务字段和旧环境变量仅作升级兼容；新配置使用上表字段。升级无需删除现有会议，旧会议读取不会自动重跑模型。
+
+## 服务端接口要求
+
+识别服务必须接受 `POST <baseURL>/audio/transcriptions` 的 multipart 请求：
+
+- `file`：16 kHz、单声道、PCM16 WAV。
+- `model`：所配置的模型名。
+- `response_format=json`、`temperature=0`。
+- 返回 JSON，至少包含字符串 `text`。
+
+识别不固定 `language`，便于处理中英粤混合发言。服务或模型本身仍须支持所需语言。
+
+翻译服务必须接受 `POST <baseURL>/chat/completions`，接收 `model`、`messages` 和非流式请求，并在 `choices[0].message.content` 返回可解析的 JSON 文本。应用请求中文、英文和粤语字幕及表达完整性判断，所选模型需要能遵循这些格式要求。
+
+请求默认使用 `response_format: {"type":"json_object"}`、`temperature: 0` 与 `max_completion_tokens`。明确报告参数不兼容的 HTTP 400 响应可触发有限降级：移除不支持的参数，或改用 `max_tokens`。这不能覆盖所有兼容服务的差异。
+
+## 已验证配置示例
+
+已有真实验证使用以下服务和模型，作为可选示例，不是应用默认值：
+
+| 配置 | 值 |
+| --- | --- |
+| Base URL | `https://api.ant-ling.com/v1` |
+| 识别模型 | `Ming-3.0-asr-tiny` |
+| 翻译模型 | `Ming-3.0-audio-flash` |
+
+其他兼容服务需验证音频格式、所需语言、响应字段、结构化翻译和请求限制。请求量、模型费用与延迟由实际服务决定。

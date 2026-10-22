@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#111014">
+  <link rel="icon" href="data:,">
+  <title>同声字幕</title>
+  <link rel="stylesheet" href="/fonts/fonts.css">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/watch.css">
+  <script type="module" src="/watch.js"></script>
+</head>
+<body class="watch-page">
+  <header class="watch-header">
+    <div class="watch-info"><h1 id="watch-title">同声字幕</h1><span id="watch-state" role="status">正在连接</span></div>
+    <nav class="language-tabs" aria-label="字幕语言">
+      <button data-language="zhHans" aria-pressed="true">中文</button>
+      <button data-language="en" aria-pressed="false">English</button>
+      <button data-language="yue" aria-pressed="false">粵語</button>
+    </nav>
+  </header>
+  <main id="watch-transcript" class="transcript" aria-label="会议字幕" tabindex="0">
+    <button id="watch-older" class="older-button" hidden>加载更早字幕</button>
+    <p id="watch-empty" class="transcript-empty">正在连接会议…</p>
+  </main>
+  <button id="watch-latest" class="latest-button" hidden>回到最新 ↓</button>
+</body>
+</html>

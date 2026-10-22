@@ -1,0 +1,492 @@
+/* Meeting navigation, setup and history panels. */
+.workspace {
+  display: grid;
+  grid-template-columns: 268px minmax(0, 1fr);
+  height: 100dvh;
+  min-height: 0;
+  background: var(--ink);
+}
+
+.app-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--line);
+  background: #161519;
+}
+
+.sidebar-top {
+  padding: 31px 22px 24px;
+}
+
+.sidebar-top h1 {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0 0 25px;
+  letter-spacing: -.02em;
+}
+
+.new-meeting-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid #44403a;
+  border-radius: 8px;
+  color: var(--paper);
+  background: #222126;
+  font-size: 14px;
+}
+
+.new-meeting-button:hover {
+  border-color: #77736c;
+  background: #28272d;
+}
+
+.new-meeting-button span {
+  color: var(--accent);
+  font-size: 20px;
+  line-height: 1;
+}
+
+.sidebar-records {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 12px 20px;
+  scrollbar-width: thin;
+}
+
+.list-message {
+  font-size: 12px;
+  line-height: 1.8;
+  color: var(--muted);
+  padding: 0 10px;
+}
+
+.meeting-row {
+  display: block;
+  width: 100%;
+  padding: 14px 12px;
+  text-align: left;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--paper);
+  margin-bottom: 3px;
+}
+
+.meeting-row:hover {
+  background: #201f24;
+}
+
+.meeting-row[aria-current="page"] {
+  background: #2a292e;
+}
+
+.meeting-row-title {
+  display: block;
+  font-size: 14px;
+  line-height: 1.5;
+  font-weight: 500;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.meeting-row-detail {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 5px;
+  color: #96929f;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.meeting-row[data-status="recording"] .meeting-row-state {
+  color: var(--accent);
+}
+
+.list-more {
+  display: block;
+  margin: 12px auto 0;
+  padding: 8px 14px;
+  border: 0;
+  color: var(--muted);
+  background: transparent;
+  font-size: 12px;
+}
+
+.sidebar-bottom {
+  flex: 0 0 auto;
+  padding: 15px 22px;
+  border-top: 1px solid var(--line);
+}
+
+.sidebar-setting {
+  min-width: 32px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 38px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.sidebar-setting:hover, .sidebar-setting[aria-current="page"] {
+  color: var(--paper);
+}
+
+.sidebar-setting svg {
+  width: 17px;
+  height: 17px;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  fill: none;
+}
+
+.workspace-content {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.workspace-panel {
+  height: 100%;
+  min-height: 0;
+  padding: 44px clamp(28px, 5vw, 86px);
+}
+
+.new-panel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+}
+
+.new-meeting-form {
+  width: min(100%, 440px);
+  padding-bottom: 4vh;
+}
+
+.meeting-illustration {
+  display: block;
+  width: 265px;
+  max-width: 70%;
+  height: auto;
+  margin: 0 auto 24px;
+}
+
+.new-meeting-form h2 {
+  text-align: center;
+  margin: 0 0 38px;
+  font-size: 30px;
+  line-height: 1.3;
+  letter-spacing: -.025em;
+}
+
+.new-meeting-form label {
+  margin: 0 0 10px;
+  color: var(--paper);
+  font-size: 14px;
+}
+
+.new-meeting-form input {
+  height: 50px;
+  border-radius: 8px;
+  padding: 12px 15px;
+  font-size: 16px;
+  background: #18171c;
+}
+
+.new-meeting-help {
+  margin: 12px 0 25px;
+  color: #96929f;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+#create-meeting {
+  width: 100%;
+  min-height: 46px;
+  font-size: 14px;
+  border-radius: 8px;
+  gap: 12px;
+}
+
+.panel-heading {
+  width: min(100%, 620px);
+  margin: 0 auto 36px;
+}
+
+.panel-heading h2 {
+  font-size: 28px;
+  margin: 0 0 10px;
+  font-weight: 600;
+}
+
+.panel-heading p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.settings-panel {
+  overflow: auto;
+}
+
+.settings-content {
+  max-width: 620px;
+  margin: auto;
+  padding: 0;
+}
+
+.settings-content fieldset {
+  margin-bottom: 32px;
+}
+
+.settings-content legend {
+  font-size: 14px;
+}
+
+.settings-content label {
+  font-size: 13px;
+}
+
+.settings-content input, .settings-content select {
+  height: 45px;
+  font-size: 14px;
+}
+
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-bottom: 20px;
+}
+
+.settings-saved {
+  font-size: 13px;
+  color: var(--accent);
+}
+
+.history-panel {
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 0;
+}
+
+.history-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  flex: 0 0 auto;
+}
+
+.history-heading h2 {
+  margin: 0;
+  font-size: 26px;
+  line-height: 1.4;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.history-meta {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.8;
+}
+
+.history-panel > .caption-languages {
+  width: 100%;
+  margin: 16px 0 15px;
+  flex: 0 0 auto;
+}
+
+.history-panel .transcript {
+  padding: 24px 4px;
+  overflow-anchor: none;
+}
+
+.history-panel .caption-pair {
+  margin-bottom: 28px;
+  font-size: 22px;
+}
+
+.history-panel .source {
+  font-size: 16px;
+  line-height: 1.5;
+  margin: 0 0 7px;
+  color: var(--muted);
+}
+
+.history-panel .translation {
+  font-size: 22px;
+  min-height: 1.22em;
+  line-height: 1.5;
+  font-weight: 500;
+  margin: 0;
+}
+
+.history-panel .transcript-empty {
+  margin-top: 12vh;
+}
+
+@media (max-width: 1000px) {
+  .workspace {
+    grid-template-columns: 232px minmax(0, 1fr);
+  }
+  .workspace-panel {
+    padding: 32px;
+  }
+  .history-heading {
+    flex-direction: column;
+    gap: 16px;
+  }
+  .history-panel {
+    padding-bottom: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .workspace {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .app-sidebar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .sidebar-top {
+    grid-row: 1;
+    grid-column: 1;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    padding: 15px 18px 12px;
+  }
+  .sidebar-top h1 {
+    margin: 0;
+    white-space: nowrap;
+    font-size: 15px;
+  }
+  .new-meeting-button {
+    min-height: 36px;
+    width: auto;
+    padding-inline: 12px;
+    font-size: 12px;
+  }
+  .sidebar-bottom {
+    grid-row: 1;
+    grid-column: 2;
+    border: 0;
+    padding: 12px 18px 12px 0;
+  }
+  .sidebar-setting {
+    font-size: 12px;
+    gap: 6px;
+  }
+  .sidebar-records {
+    grid-row: 2;
+    grid-column: 1 / -1;
+    display: flex;
+    max-height: 110px;
+    padding: 0 12px 10px;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+  .sidebar-records nav {
+    display: flex;
+  }
+  .meeting-row {
+    width: 170px;
+    margin: 0 3px 0 0;
+    padding: 10px;
+  }
+  .meeting-row-title {
+    font-size: 12px;
+  }
+  .meeting-row-detail {
+    font-size: 10px;
+  }
+  .list-message {
+    margin: 3px 6px;
+  }
+  .list-more {
+    white-space: nowrap;
+  }
+  .workspace-panel {
+    padding: 24px;
+  }
+  .new-meeting-form {
+    padding-bottom: 0;
+  }
+  .meeting-illustration {
+    width: 210px;
+    margin-bottom: 16px;
+  }
+  .new-meeting-form h2 {
+    font-size: 25px;
+    margin-bottom: 25px;
+  }
+  .new-meeting-help {
+    font-size: 11px;
+  }
+  .history-heading h2 {
+    font-size: 23px;
+  }
+  .history-panel {
+    padding-bottom: 0;
+  }
+}
+
+.history-actions {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.history-actions > a, .history-actions > button {
+  min-height: 38px;
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.danger-button {
+  color: #e6b0ab;
+  background: transparent;
+  border-color: #614345;
+}
+
+.danger-button:hover {
+  background: #342126;
+  border-color: #9b6268;
+}
+
+.settings-content .checkbox-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.settings-content .checkbox-field input {
+  flex: 0 0 auto;
+  width: auto;
+  height: auto;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
