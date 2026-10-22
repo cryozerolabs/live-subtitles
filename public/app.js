@@ -198,6 +198,7 @@ function fillSettings() {
     $(kind + '-api-key').value = ''; $(kind + '-clear-key').checked = false;
     updateKeyField(kind);
   }
+  $('asr-prompt').value = settings.asr?.prompt || '';
   $('translation-use-asr').checked = !!settings.translation?.useAsrConnection; updateTranslationConnection();
   $('network-address').replaceChildren(new Option('自动选择', ''));
   for (const address of settings.networkAddresses || []) $('network-address').add(new Option(address, address));
@@ -231,7 +232,7 @@ $('settings-form').onsubmit = async event => {
   try {
     const connection = kind => ({ baseURL: $(kind + '-base-url').value.trim(), model: $(kind + '-model').value.trim(),
       ...($(kind + '-clear-key').checked ? { clearApiKey: true } : $(kind + '-api-key').value.trim() ? { apiKey: $(kind + '-api-key').value.trim() } : {}) });
-    await runtime.save({ asr: connection('asr'), translation: $('translation-use-asr').checked ? { model: $('translation-model').value.trim(), useAsrConnection: true } : { ...connection('translation'), useAsrConnection: false }, networkAddress: $('network-address').value });
+    await runtime.save({ asr: { ...connection('asr'), prompt: $('asr-prompt').value.trim() }, translation: $('translation-use-asr').checked ? { model: $('translation-model').value.trim(), useAsrConnection: true } : { ...connection('translation'), useAsrConnection: false }, networkAddress: $('network-address').value });
     fillSettings();
     $('settings-saved').hidden = false;
   } catch (e) { $('settings-error').textContent = e.message; $('settings-error').hidden = false; }

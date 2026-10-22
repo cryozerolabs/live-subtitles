@@ -140,7 +140,7 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), transport = fetch
     const tracked = kind => (...args) => { ctx.providerRequests[kind]++; return transport(...args); };
     ctx.sentences = new SentenceBuffer({
       captions: ctx.data.captions, lane: translationLane,
-      translate: (raw, prior, options) => translations(raw, connection(settings, 'translation'), tracked('translation'), prior, { ...options, priorityLanguage: ctx.captionLanguage || 'zhHans' }),
+      translate: (raw, prior, options) => translations(raw, connection(settings, 'translation'), tracked('translation'), prior, { ...options, priorityLanguage: ctx.captionLanguage || 'zhHans', contextPrompt: settings.asr.prompt }),
       asrPending: () => ctx.asr?.pendingFinals > 0 || ctx.speech?.pendingMs > 0, speaking: () => ctx.asr?.speaking,
       onError: e => { ctx.error = e.message; changed(ctx); }, onChange: () => changed(ctx),
     });

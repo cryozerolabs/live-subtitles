@@ -55,6 +55,8 @@ The current version supports Chinese, English and Cantonese. To add other langua
 
 Configure the **Base URL, API Key and model** for each service in Settings. Translation can also reuse the speech recognition service’s address and key. Keys are managed by the local backend, with service settings stored separately from meeting content. Change models while keeping the same subtitle experience.
 
+Save your topic, product names and technical terms once in the global context. Speech recognition and translation reuse them across meetings.
+
 ## Bring it to your next event
 
 Prepare Node.js 20+, a modern browser with microphone and AudioWorklet support, and speech recognition and text translation services. Download the source, open the project directory and run:

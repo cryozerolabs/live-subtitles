@@ -13,6 +13,7 @@
   "asr": {
     "baseURL": "https://api.example.com/v1",
     "model": "speech-model",
+    "prompt": "本次介绍 Claude Code、Codex 与 MCP。",
     "hasApiKey": true
   },
   "translation": {
@@ -28,13 +29,14 @@
 }
 ```
 
-`PUT /api/settings` 更新对应分组。可写字段为 `baseURL`、`model`、`apiKey`、`clearApiKey`，以及翻译分组的 `useAsrConnection`；`networkAddress` 用于选择二维码中的局域网地址。示例：
+`PUT /api/settings` 更新对应分组。可写字段为 `baseURL`、`model`、`apiKey`、`clearApiKey`，以及识别分组的 `prompt`、翻译分组的 `useAsrConnection`；`networkAddress` 用于选择二维码中的局域网地址。示例：
 
 ```json
 {
   "asr": {
     "baseURL": "https://api.example.com/v1",
-    "model": "speech-model"
+    "model": "speech-model",
+    "prompt": "本次介绍 Claude Code、Codex 与 MCP。"
   },
   "translation": {
     "model": "text-model",
@@ -44,6 +46,8 @@
 ```
 
 未传 Key 或空白 Key 保留原值；`clearApiKey: true` 显式清除。更换来源不保留旧 Key。响应结构与 GET 相同，不回传密钥。连接和环境变量行为见 [服务配置](configuration.md)。
+
+`asr.prompt` 为全局上下文，所有会议共用，翻译同步参考。未传保持原值，空字符串清除；接受字符串，最多 4000 个 UTF-16 码元，超限返回 400。只读观看接口不返回此项。设置变更须等待已有识别与翻译处理完成；控制页面在修改服务或上下文时先暂停并排空，不自动恢复收音。
 
 ## 会议
 

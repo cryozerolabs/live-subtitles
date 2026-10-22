@@ -9,6 +9,7 @@
 | `baseURL` | 识别服务的基础地址 | 翻译服务的基础地址 |
 | `apiKey` | 识别服务 Key，可为空 | 翻译服务 Key，可为空 |
 | `model` | 支持音频转写的模型名 | 支持文本翻译与 JSON 输出的模型名 |
+| `prompt` | 可选的全局识别上下文与术语，留空关闭 | 自动参考同一份上下文，无需重复配置 |
 | `useAsrConnection` | 不适用 | 为 `true` 时复用识别服务的 `baseURL` 和 Key |
 
 复用连接只影响请求使用的地址和 Key，翻译模型仍需独立填写。翻译的独立连接配置会保留，关闭复用后继续使用。读取设置返回各组保存的配置与 `hasApiKey`，不会把复用后的地址或 Key 写回翻译的独立配置。
@@ -22,6 +23,18 @@ Base URL: https://api.example.com/v1
 ```
 
 应用不自动增加 `/v1`。本地服务的 Base URL 可以是 `http://localhost:8000/v1`，也可以使用该服务实际提供的其他路径。地址不接受内嵌用户名、密码、查询参数或片段。
+
+## 全局识别上下文与术语
+
+在设置的语音识别区域填写分享主题、产品名、人名或专业术语，例如：
+
+```text
+本次介绍 Claude Code、Codex，以及 MCP 协议。
+```
+
+保存一次，所有会议自动复用。识别请求通过标准 multipart `prompt` 字段发送这段内容；翻译请求将它作为独立的 `background` 数据，用于理解领域和保留专名拼写，原文仍以实际识别结果为准。上下文本身不作为发言写入字幕，也不会出现在手机观看接口中。
+
+建议优先写最相关的主题与术语。文本框最多接受 4000 个 UTF-16 码元，具体服务对提示词的长度、语言与支持方式另有要求时，按该服务填写；应用不自动截断或替换专名。留空保存即可关闭，不发送 ASR `prompt`。收音中修改此项会先暂停、上传并排空已录音频，保存后手动继续。
 
 ## Key 的保存与更新
 
@@ -42,6 +55,7 @@ Base URL: https://api.example.com/v1
 | `ASR_BASE_URL` | 识别 Base URL | 空 |
 | `ASR_API_KEY` | 识别 Key | 空 |
 | `ASR_MODEL` | 识别模型 | 空 |
+| `ASR_PROMPT` | 全局识别上下文与术语 | 空 |
 | `TRANSLATION_BASE_URL` | 翻译 Base URL | 空 |
 | `TRANSLATION_API_KEY` | 翻译 Key | 空 |
 | `TRANSLATION_MODEL` | 翻译模型 | 空 |
@@ -57,6 +71,7 @@ Base URL: https://api.example.com/v1
 - `file`：16 kHz、单声道、PCM16 WAV。
 - `model`：所配置的模型名。
 - `response_format=json`、`temperature=0`。
+- 配置非空上下文时，增加标准 `prompt` 字段。
 - 返回 JSON，至少包含字符串 `text`。
 
 识别不固定 `language`，便于处理中英粤混合发言。服务或模型本身仍须支持所需语言。

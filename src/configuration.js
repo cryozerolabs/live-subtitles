@@ -34,7 +34,8 @@ const sameOrigin = (a, b) => !!a && !!b && new URL(a).origin === new URL(b).orig
 export function connection(settings, kind) {
   const service = settings[kind];
   const source = kind === 'translation' && service.useAsrConnection ? settings.asr : service;
-  return { baseURL: source.baseURL, apiKey: source.apiKey, model: service.model };
+  return { baseURL: source.baseURL, apiKey: source.apiKey, model: service.model,
+    ...(kind === 'asr' && service.prompt ? { prompt: service.prompt } : {}) };
 }
 export const settingsReady = settings => ['asr', 'translation'].every(kind => {
   const service = connection(settings, kind);
@@ -42,16 +43,17 @@ export const settingsReady = settings => ['asr', 'translation'].every(kind => {
 });
 export function publicSettings(settings) {
   const publicService = service => ({ baseURL: service.baseURL, model: service.model, hasApiKey: !!service.apiKey });
-  return { asr: publicService(settings.asr), translation: { ...publicService(settings.translation), useAsrConnection: settings.translation.useAsrConnection }, networkAddress: settings.networkAddress, configured: settingsReady(settings) };
+  return { asr: { ...publicService(settings.asr), prompt: settings.asr.prompt || '' }, translation: { ...publicService(settings.translation), useAsrConnection: settings.translation.useAsrConnection }, networkAddress: settings.networkAddress, configured: settingsReady(settings) };
 }
 
 function updateService(previous, patch, kind) {
   if (!object(patch)) throw invalid('服务配置格式不正确。');
-  const allowed = ['baseURL', 'apiKey', 'model', 'clearApiKey', ...(kind === 'translation' ? ['useAsrConnection'] : [])];
+  const allowed = ['baseURL', 'apiKey', 'model', 'clearApiKey', ...(kind === 'translation' ? ['useAsrConnection'] : ['prompt'])];
   if (Object.keys(patch).some(key => !allowed.includes(key))) throw invalid('服务配置包含不支持的字段。');
   const result = { ...previous };
   if (own(patch, 'baseURL')) result.baseURL = baseURL(patch.baseURL);
   if (own(patch, 'model')) result.model = text(patch.model, '模型名');
+  if (kind === 'asr' && own(patch, 'prompt')) result.prompt = text(patch.prompt, '识别上下文与术语', 4000);
   for (const key of ['clearApiKey', 'useAsrConnection']) if (own(patch, key) && typeof patch[key] !== 'boolean') throw invalid(key + ' 必须为布尔值。');
   if (kind === 'translation' && own(patch, 'useAsrConnection')) result.useAsrConnection = patch.useAsrConnection;
   const fresh = own(patch, 'apiKey') ? apiKey(patch.apiKey) : '';
@@ -71,7 +73,7 @@ export function updateSettings(previous, patch) {
 }
 
 function fromEnvironment(env) {
-  const asr = { baseURL: baseURL(env.ASR_BASE_URL ?? ''), apiKey: apiKey(env.ASR_API_KEY ?? ''), model: text(env.ASR_MODEL ?? '', '识别模型名') };
+  const asr = { baseURL: baseURL(env.ASR_BASE_URL ?? ''), apiKey: apiKey(env.ASR_API_KEY ?? ''), model: text(env.ASR_MODEL ?? '', '识别模型名'), prompt: text(env.ASR_PROMPT ?? '', '识别上下文与术语', 4000) };
   const translation = { baseURL: baseURL(env.TRANSLATION_BASE_URL ?? ''), apiKey: apiKey(env.TRANSLATION_API_KEY ?? ''), model: text(env.TRANSLATION_MODEL ?? '', '翻译模型名'), useAsrConnection: false };
   return { version: 2, asr, translation, networkAddress: '' };
 }
@@ -82,10 +84,11 @@ function normalizeSaved(saved, defaults) {
   for (const kind of ['asr', 'translation']) {
     if (!object(saved[kind])) throw invalid('本机服务配置格式不正确。');
     const service = saved[kind], fallback = defaults[kind];
-    const allowed = ['baseURL', 'apiKey', 'model', ...(kind === 'translation' ? ['useAsrConnection'] : [])];
+    const allowed = ['baseURL', 'apiKey', 'model', ...(kind === 'translation' ? ['useAsrConnection'] : ['prompt'])];
     if (Object.keys(service).some(key => !allowed.includes(key))) throw invalid('本机服务配置包含不支持的字段。');
     const url = baseURL(service.baseURL ?? fallback.baseURL);
     result[kind] = { baseURL: url, model: text(service.model ?? fallback.model, '模型名'), apiKey: apiKey(service.apiKey ?? (sameOrigin(url, fallback.baseURL) ? fallback.apiKey : '')) };
+    if (kind === 'asr') result.asr.prompt = text(service.prompt ?? fallback.prompt, '识别上下文与术语', 4000);
   }
   if (own(saved.translation, 'useAsrConnection') && typeof saved.translation.useAsrConnection !== 'boolean') throw invalid('useAsrConnection 必须为布尔值。');
   result.translation.useAsrConnection = saved.translation.useAsrConnection === true;

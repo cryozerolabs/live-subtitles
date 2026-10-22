@@ -68,7 +68,7 @@ test('pause and continue keep one recording timeline and expose paused status to
 
 function runtimeHarness() {
   let emit, captureStarts = 0, captureStops = 0, current = { id: 'initial', version: 2, status: 'ready', captions: [], segments: [] }, uploadRelease;
-  let settings = { configured: true, asr: { baseURL: 'http://localhost:8000', model: 'asr', hasApiKey: true }, translation: { baseURL: 'http://localhost:9000', model: 'translate', hasApiKey: true, useAsrConnection: false } };
+  let settings = { configured: true, asr: { baseURL: 'http://localhost:8000', model: 'asr', hasApiKey: true, prompt: '原有术语' }, translation: { baseURL: 'http://localhost:9000', model: 'translate', hasApiKey: true, useAsrConnection: false } };
   const calls = [], uploadGate = new Promise(r => { uploadRelease = r; });
   const runtime = new CaptionRuntime({
     api: async (url, options) => {
@@ -117,6 +117,7 @@ test('each service connection, key action and sharing change drains captured aud
   const changes = [
     { asr: { baseURL: 'http://localhost:8010/custom' } }, { asr: { model: 'new-asr' } },
     { asr: { apiKey: 'replacement-test-key' } }, { asr: { clearApiKey: true } },
+    { asr: { prompt: '本次介绍 Claude Code。' } }, { asr: { prompt: '' } },
     { translation: { baseURL: 'http://localhost:9010/custom' } }, { translation: { model: 'new-translation' } },
     { translation: { apiKey: 'replacement-test-key' } }, { translation: { clearApiKey: true } },
     { translation: { useAsrConnection: true } },
@@ -138,7 +139,7 @@ test('each service connection, key action and sharing change drains captured aud
 test('saving only network access leaves active capture and the configured connections unchanged', async () => {
   const h = runtimeHarness(), r = h.runtime;
   await r.init(); await r.start(); const asr = r.settings.asr, translation = r.settings.translation;
-  await r.save({ asr: { baseURL: asr.baseURL, model: asr.model }, translation: { baseURL: translation.baseURL, model: translation.model, useAsrConnection: false }, networkAddress: '192.0.2.10' });
+  await r.save({ asr: { baseURL: asr.baseURL, model: asr.model, prompt: asr.prompt }, translation: { baseURL: translation.baseURL, model: translation.model, useAsrConnection: false }, networkAddress: '192.0.2.10' });
   assert.equal(r.audio.recording, true); assert.equal(h.stops(), 0);
   assert.equal(h.calls.some(c => c.endsWith('/pause')), false);
   r.destroy();
