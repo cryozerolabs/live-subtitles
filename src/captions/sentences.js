@@ -54,13 +54,15 @@ export class SentenceBuffer {
 
   receive(result) {
     if (this.closed || this.suppressed.has(result.id) || this.consumed.has(result.id)) return;
-    // Start translation with the stable prefix; retain uncertain tails until the
-    // recognizer either confirms them or supplies a final result.
+    // Display the latest hypothesis immediately. Only the agreeing prefix enters
+    // translation; a changing ASR tail must not trigger speculative translations.
     const raw = result.final ? (result.text ?? result.raw) : (result.stable ?? result.raw);
-    if (!raw && !result.final) return;
-    result = { ...result, raw };
+    const previewRaw = result.final ? raw : (result.text ?? result.raw);
+    if (!raw && !previewRaw && !result.final) return;
+    result = { ...result, raw, previewRaw };
     let entry = this.entries.find(e => e.id === result.id);
-    if (!entry && !result.raw) return;
+    if (entry && result.revision < entry.revision) return;
+    if (!entry && !raw && !previewRaw) return;
     if (entry) Object.assign(entry, result);
     else {
       const previous = this.entries.at(-1), c = this.current;
@@ -72,14 +74,29 @@ export class SentenceBuffer {
 
   refresh() {
     const { raw } = composeSources(this.entries);
-    if (!raw.trim()) return;
+    const previewEntries = this.entries.map(e => ({ ...e, raw: e.previewRaw ?? e.raw }));
+    const preview = composeSources(previewEntries);
+    if (!raw.trim() && !preview.raw.trim()) {
+      // A final non-speech result can withdraw an earlier tentative hypothesis.
+      if (this.current) {
+        this.current.skipped = true; this.current.raw = ''; this.advanceDisplay(this.current);
+        this.finish(this.current);
+      }
+      return;
+    }
     if (!this.current) {
       this.current = { id: 'c' + ++this.seq, revision: 0, raw: '', final: false, translations: null, createdAt: this.now() };
       this.captions.push(this.current); this.attempted = '';
     }
     const c = this.current;
+    const sourceChanged = c.raw !== raw || (c.sourcePreview?.raw ?? c.raw) !== preview.raw;
     if (c.raw !== raw) { c.raw = raw; c.revision++; }
     c.sources = this.sources(raw.length); this.updateTimes(c);
+    if (preview.raw !== raw) {
+      const first = preview.spans[0]?.entry, last = preview.spans.at(-1)?.entry;
+      c.sourcePreview = { raw: preview.raw, startMs: sourceTime(first, first.offset), endMs: sourceTime(last, last.raw.length) };
+    } else delete c.sourcePreview;
+    if (sourceChanged) this.advanceDisplay(c);
     // Do not freeze part of an ASR hypothesis that a final pass can still rewrite.
     if (points(raw) > 220 && this.entries.every(e => e.final)) {
       this.seal(sentenceCut(raw), 'length');
@@ -123,7 +140,7 @@ export class SentenceBuffer {
   schedule(candidate = false) {
     clearTimeout(this.timer);
     const c = this.current;
-    if (!c || c.skipped || c.sealed || this.closed) return;
+    if (!c?.raw.trim() || c.skipped || c.sealed || this.closed) return;
     if (!candidate && points(c.raw.trim()) < 6) return;
     const key = `${c.id}:${c.revision}:${candidate}`;
     if (this.attempted === key) return;
@@ -139,7 +156,7 @@ export class SentenceBuffer {
   }
 
   request(c, priority, sealed) {
-    if (this.closed || c.skipped) return false;
+    if (this.closed || c.skipped || !c.raw.trim()) return false;
     const revision = c.revision, raw = c.raw, fragments = c.fragments || (c.sources || []).map(s => {
       const e = this.entries.find(e => e.id === s.id);
       return e ? e.raw.slice(s.start, s.end) : raw;
@@ -174,6 +191,7 @@ export class SentenceBuffer {
     }).catch(e => {
       settled = true; this.discardProvisional(c, requestId);
       if (this.closed || e.name === 'AbortError') return;
+      if (c.final || c.revision !== revision || (!sealed && !c.sealed && this.current !== c)) { this.metrics.stale++; return; }
       if (skippable(e)) this.skip(c, e);
       else if (priority) { c.translationError = e.message; c.translationErrorKind = e.kind || 'processing'; this.onError(e); }
     }).finally(() => {
@@ -199,7 +217,7 @@ export class SentenceBuffer {
   finish(c) {
     if (this.current !== c || c.final) return;
     clearTimeout(this.timer); clearTimeout(this.idleTimer);
-    if (c.provisional) { delete c.provisional; this.advanceDisplay(c); }
+    if (c.provisional || c.sourcePreview) { delete c.provisional; delete c.sourcePreview; this.advanceDisplay(c); }
     c.final = true; c.finalReadyAt = this.now(); this.consume(c.raw.length); this.current = null; this.attempted = '';
     this.onChange();
   }
@@ -219,10 +237,10 @@ export class SentenceBuffer {
         c.closeReason = reason; this.finish(c); return;
       }
     }
-    c.raw = c.raw.slice(0, cut); c.sources = this.sources(cut);
+    c.raw = c.raw.slice(0, cut); delete c.sourcePreview; c.sources = this.sources(cut);
     this.updateTimes(c);
     c.fragments = c.sources.map(s => this.entries.find(e => e.id === s.id).raw.slice(s.start, s.end));
-    c.revision++; c.sealed = true; c.closeReason = reason;
+    c.revision++; this.advanceDisplay(c); c.sealed = true; c.closeReason = reason;
     this.consume(cut); this.current = null; this.attempted = '';
     this.request(c, true, true); this.onChange();
   }

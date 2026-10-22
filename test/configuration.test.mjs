@@ -66,21 +66,12 @@ test('same-origin new environment groups do not implicitly copy the recognition 
   assert.equal(connection(store.value, 'translation').apiKey, '');
 });
 
-test('legacy flat settings migrate once, preserve keys, strip endpoint suffixes and redact secrets', t => {
-  const dir = directory(t), file = path.join(dir, 'settings.json');
-  const saved = {
-    asrEndpoint: 'https://fixture.example/custom/audio/transcriptions', asrKey: ASR_KEY, asrModel: 'legacy-speech',
-    llmEndpoint: 'https://fixture.example/custom/chat/completions', llmKey: ASR_KEY, llmModel: 'legacy-text',
-    meetingTitle: 'Old title', meetingStartTime: '09:00', meetingEndTime: '10:00', vocabulary: 'Old word', mode: 'ming',
-    networkAddress: '192.168.1.8',
-  };
-  fs.writeFileSync(file, JSON.stringify(saved), { mode: 0o644 });
-  const store = new SettingsStore(dir, env), migrated = JSON.parse(fs.readFileSync(file, 'utf8'));
-  assert.equal(migrated.version, 2);
-  assert.deepEqual(Object.keys(migrated).sort(), ['asr', 'networkAddress', 'translation', 'version']);
-  assert.deepEqual(store.value.asr, { baseURL: 'https://fixture.example/custom', apiKey: ASR_KEY, model: 'legacy-speech' });
-  assert.deepEqual(store.value.translation, { baseURL: 'https://fixture.example/custom', apiKey: ASR_KEY, model: 'legacy-text', useAsrConnection: true });
-  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+test('loading saved service groups preserves the file and never publishes credentials', t => {
+  const dir = directory(t), initial = new SettingsStore(dir, env);
+  initial.write(initial.value);
+  const disk = fs.readFileSync(initial.file, 'utf8'), store = new SettingsStore(dir, {});
+  assert.deepEqual(store.value, initial.value);
+  assert.equal(fs.readFileSync(initial.file, 'utf8'), disk);
   const visible = publicSettings(store.value), serialized = JSON.stringify(visible);
   assert.equal(visible.asr.hasApiKey, true);
   assert.equal(visible.translation.hasApiKey, true);
@@ -88,47 +79,25 @@ test('legacy flat settings migrate once, preserve keys, strip endpoint suffixes 
   assert.equal(Object.hasOwn(visible.translation, 'apiKey'), false);
   assert.equal(serialized.includes(ASR_KEY), false);
   assert.equal(serialized.includes(TRANSLATION_KEY), false);
-  for (const field of ['meetingTitle', 'meetingStartTime', 'meetingEndTime', 'vocabulary', 'mode']) assert.equal(Object.hasOwn(migrated, field), false);
-  assert.deepEqual(new SettingsStore(dir, {}).value, migrated);
 });
 
-test('legacy environment URLs keep their previous v1 expansion and full-endpoint meaning', t => {
-  for (const [input, expected] of [
-    ['https://legacy.example', 'https://legacy.example/v1'],
-    ['https://legacy.example/custom', 'https://legacy.example/custom/v1'],
-    ['https://legacy.example/v1/', 'https://legacy.example/v1'],
-    ['https://legacy.example/custom/audio/transcriptions', 'https://legacy.example/custom'],
-    ['https://legacy.example/custom/audio/transcriptions/', 'https://legacy.example/custom'],
+test('unsupported saved configuration shapes fail without rewriting the file or echoing keys', t => {
+  const dir = directory(t), file = path.join(dir, 'settings.json'), valid = fixture(t).value;
+  for (const saved of [
+    { version: 0, token: ASR_KEY },
+    { ...valid, asr: undefined },
+    { ...valid, token: ASR_KEY },
+    { ...valid, asr: { ...valid.asr, token: ASR_KEY } },
+    { ...valid, translation: { ...valid.translation, useAsrConnection: 'true' } },
   ]) {
-    const store = new SettingsStore(directory(t), { MING_ASR_URL: input, MING_ASR_MODEL: 'legacy-speech', MING_API_KEY: ASR_KEY });
-    assert.equal(store.value.asr.baseURL, expected);
-    assert.equal(store.value.asr.apiKey, ASR_KEY);
-    assert.equal(store.value.asr.model, 'legacy-speech');
+    const disk = JSON.stringify(saved); fs.writeFileSync(file, disk);
+    rejectsWithoutEcho(() => new SettingsStore(dir, env), [ASR_KEY, TRANSLATION_KEY]);
+    assert.equal(fs.readFileSync(file, 'utf8'), disk);
   }
-  for (const [input, expected] of [
-    ['https://legacy.example', 'https://legacy.example/v1'],
-    ['https://legacy.example/custom', 'https://legacy.example/custom/v1'],
-    ['https://legacy.example/v1/', 'https://legacy.example/v1'],
-    ['https://legacy.example/custom/chat/completions', 'https://legacy.example/custom'],
-    ['https://legacy.example/custom/chat/completions/', 'https://legacy.example/custom'],
-  ]) {
-    const store = new SettingsStore(directory(t), { DEMO_LLM_URL: input, DEMO_LLM_MODEL: 'legacy-text', DEMO_LLM_KEY: TRANSLATION_KEY });
-    assert.equal(store.value.translation.baseURL, expected);
-    assert.equal(store.value.translation.apiKey, TRANSLATION_KEY);
-    assert.equal(store.value.translation.model, 'legacy-text');
-  }
-  const shared = new SettingsStore(directory(t), {
-    MING_ASR_URL: 'https://legacy.example', MING_ASR_MODEL: 'legacy-speech', MING_API_KEY: ASR_KEY,
-    DEMO_LLM_URL: 'https://legacy.example', DEMO_LLM_MODEL: 'legacy-text',
-  });
-  assert.equal(shared.value.translation.apiKey, ASR_KEY);
 });
 
-test('new Base URL environment fields override legacy names without adding v1', t => {
-  const store = new SettingsStore(directory(t), {
-    ...env, MING_ASR_URL: 'https://old.example', MING_ASR_MODEL: 'old-speech', MING_API_KEY: 'fixture-old-asr-key',
-    DEMO_LLM_URL: 'https://old.example', DEMO_LLM_MODEL: 'old-text', DEMO_LLM_KEY: 'fixture-old-text-key',
-  });
+test('Base URL environment fields keep custom paths without adding v1', t => {
+  const store = new SettingsStore(directory(t), env);
   assert.equal(store.value.asr.baseURL, env.ASR_BASE_URL);
   assert.equal(store.value.translation.baseURL, env.TRANSLATION_BASE_URL);
   assert.equal(store.value.asr.model, env.ASR_MODEL);

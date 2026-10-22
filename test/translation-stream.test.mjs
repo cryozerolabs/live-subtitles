@@ -9,7 +9,7 @@ import { ModelLane } from '../src/captions/model-lane.js';
 import { splitCueText, cueRows, captionRevision } from '../src/captions/cue-text.js';
 import { SubtitleStore, subtitleFiles } from '../src/storage/subtitle-store.js';
 import { Transcript } from '../public/transcript.js';
-import { createApp } from '../src/server.js';
+import { createApp } from './helpers/service.mjs';
 
 const settings = { baseURL: 'http://provider/v1', model: 'translator', apiKey: 'synthetic-test-key' };
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -38,7 +38,7 @@ function sse({ bytes = false } = {}) {
   };
 }
 
-test('streamed translation publishes closed cue groups before the response finishes, never partial text', async () => {
+test('streamed translation publishes each closed language before the cue closes, never partial strings', async () => {
   const raw = '预算尚未批准。日期还没有确定。', stream = sse({ bytes: true }), updates = [];
   const value = valueFor(raw), text = JSON.stringify(value);
   const firstEnd = '{"cues":['.length + JSON.stringify(value.cues[0]).length;
@@ -47,12 +47,16 @@ test('streamed translation publishes closed cue groups before the response finis
     requested = true; assert.equal(JSON.parse(options.body).stream, true); return stream.response;
   }, [], { onProgress: out => updates.push(out) }).then(out => { settled = true; return out; });
   await until(() => requested);
-  stream.emit(': keepalive\r\n\r\n'); stream.content(text.slice(0, firstEnd - 1)); await sleep(10);
+  const firstLanguageEnd = text.indexOf(',"en"');
+  stream.emit(': keepalive\r\n\r\n'); stream.content(text.slice(0, firstLanguageEnd - 1)); await sleep(10);
   assert.equal(updates.length, 0);
-  stream.content(text.slice(firstEnd - 1, firstEnd)); await until(() => updates.length === 1);
+  stream.content(text.slice(firstLanguageEnd - 1, firstLanguageEnd)); await until(() => updates.length === 1);
   assert.equal(updates[0].cues.length, 1); assert.equal(updates[0].complete, false); assert.equal(settled, false);
-  stream.content(text.slice(firstEnd)); await until(() => updates.length === 2);
-  assert.equal(settled, false); assert.equal(updates[1].cues.length, 2);
+  assert.deepEqual(updates[0].cues[0].translations, { zhHans: value.cues[0].zhHans });
+  stream.content(text.slice(firstLanguageEnd, firstEnd - 1)); await until(() => updates.length === 3);
+  assert.deepEqual(updates[2].cues[0].translations, { zhHans: '预算尚未批准。', en: '预算尚未批准。', yue: '預算尚未批准。' });
+  stream.content(text.slice(firstEnd - 1)); await until(() => updates.at(-1)?.cues.length === 2);
+  assert.equal(settled, false);
   stream.finish(); const out = await pending;
   assert.equal(out.complete, true); assert.equal(out.cues.map(c => c.raw).join(''), raw);
 });
@@ -63,8 +67,103 @@ test('stream parser handles quotes, nested braces, emoji and UTF-8 split between
   const pending = translations(raw, settings, async () => stream.response, [], { onProgress: out => updates.push(out) });
   stream.content(JSON.stringify({ metadata: { cues: [row] }, cues: [row], complete: true })); stream.finish();
   const out = await pending;
-  assert.equal(updates.length, 1); assert.equal(out.cues[0].translations.en, row.en);
+  assert.equal(updates.length, 3); assert.equal(out.cues[0].translations.en, row.en);
+  assert.deepEqual(Object.keys(updates[0].cues[0].translations), ['zhHans']);
   assert.equal(out.cues[0].translations.zhHans, row.zhHans);
+});
+
+test('the selected language is requested first and can display while other languages are still missing', async () => {
+  const raw = '预算未批。', stream = sse(), updates = [];
+  const pending = translations(raw, settings, async (_url, options) => {
+    const system = JSON.parse(options.body).messages[0].content;
+    const schema = JSON.parse(system.split('\n')[1].slice('只返回 JSON：'.length, -1));
+    assert.deepEqual(Object.keys(schema.cues[0]), ['id', 'source', 'yue', 'zhHans', 'en']);
+    return stream.response;
+  }, [], { priorityLanguage: 'yue', onProgress: out => updates.push(out) });
+  stream.content('{"cues":[{"id":1,"source":"预算未批。","yue":"預算仲未批。"');
+  await until(() => updates.length === 1);
+  assert.deepEqual(updates[0].cues[0].translations, { yue: '預算仲未批。' });
+  stream.content(',"zhHans":"预算未批。","en":"The budget is pending approval."}],"complete":true}'); stream.finish();
+  const out = await pending;
+  assert.ok(out.cues[0].translations.zhHans); assert.ok(out.cues[0].translations.en); assert.equal(out.complete, true);
+});
+
+test('early language fields require an exact source echo; invalid or duplicate cue IDs retract the attempt', async () => {
+  const raw = '预算未批。日期未定。';
+  for (const invalid of ['source', 'duplicate']) {
+    const updates = []; let calls = 0;
+    const out = await translations(raw, settings, async () => {
+      if (++calls === 2) return jsonResponse(valueFor(raw));
+      const stream = sse(), rows = rowsFor(raw);
+      if (invalid === 'source') stream.content('{"cues":[{"id":1,"source":"预算已批。","yue":"預算批咗。"');
+      else stream.content('{"cues":[' + JSON.stringify(rows[0]) + ',' + JSON.stringify(rows[0]));
+      stream.finish(); return stream.response;
+    }, [], { onProgress: out => updates.push(out) });
+    assert.equal(calls, 2); assert.equal(out.complete, true); assert.equal(updates.at(-1), null);
+    if (invalid === 'source') assert.ok(updates.every(value => value === null));
+  }
+  const stream = sse(), updates = [];
+  const pending = translations('预算未批。', settings, async () => stream.response, [], { onProgress: out => updates.push(out) });
+  stream.content('{"cues":[{"id":1,"zhHans":"预算未批。","en":"Pending.","yue":"仲未批。"'); await sleep(10);
+  assert.equal(updates.length, 0);
+  stream.content('}],"complete":true}'); stream.finish(); assert.equal((await pending).complete, true);
+  assert.equal(updates.length, 1);
+});
+
+test('the first ASR hypothesis displays without translation and later corrections replace it in place', async t => {
+  const captions = [], calls = [];
+  const buffer = new SentenceBuffer({ captions, lane: new ModelLane(), partialMs: 0,
+    translate: async raw => { calls.push(raw); return complete(raw); },
+  });
+  t.after(() => buffer.close()); buffer.voice(Date.now());
+  buffer.receive({ id: 'u1', revision: 1, raw: '預算批咗。', stable: '', final: false, startMs: 300, endMs: 1300 });
+  assert.equal(cueRows(captions)[0].raw, '預算批咗。'); assert.deepEqual(cueRows(captions)[0].translations, {});
+  await sleep(10); assert.equal(calls.length, 0); assert.deepEqual(cueRows(captions, { finalizedPrefix: true }), []);
+  const first = cueRows(captions)[0];
+  buffer.receive({ id: 'u1', revision: 2, raw: '預算仲未批，要等驗收。', stable: '預算仲未批，', final: false, startMs: 300, endMs: 2300 });
+  assert.equal(cueRows(captions)[0].id, first.id); assert.ok(cueRows(captions)[0].revision > first.revision);
+  assert.equal(cueRows(captions).map(c => c.raw).join(''), '預算仲未批，要等驗收。');
+  await until(() => calls.length === 1); assert.equal(calls[0], '預算仲未批，');
+  await until(() => cueRows(captions)[0]?.translations.en);
+  assert.equal(cueRows(captions)[0].raw, '預算仲未批，');
+  assert.ok(cueRows(captions).at(-1).raw.includes('要等驗收'));
+  assert.deepEqual(cueRows(captions).at(-1).translations, {});
+  buffer.receive({ id: 'u1', revision: 3, raw: '預算仲未批，要等驗收。', final: true, cutReason: 'pause', startMs: 300, endMs: 2700 });
+  await until(() => captions[0].final);
+  assert.equal(cueRows(captions).map(c => c.raw).join(''), '預算仲未批，要等驗收。');
+  assert.ok(cueRows(captions).every(c => c.final && c.translations.yue));
+});
+
+test('a stale translation format error cannot suppress corrected speech', async t => {
+  const gate = deferred(), captions = []; let started = false;
+  const buffer = new SentenceBuffer({ captions, lane: new ModelLane(), partialMs: 0,
+    translate: async raw => {
+      if (!started) { started = true; await gate.promise; throw Object.assign(new Error('bad old response'), { kind: 'format' }); }
+      return complete(raw);
+    },
+  });
+  t.after(() => buffer.close()); buffer.voice(Date.now());
+  buffer.receive({ id: 'u1', revision: 1, raw: '预算已经批准。', final: false }); await until(() => started);
+  buffer.receive({ id: 'u1', revision: 2, raw: '预算还没有批准。', final: true, cutReason: 'pause' }); gate.resolve();
+  await until(() => captions[0].final);
+  assert.equal(captions[0].skipped, undefined); assert.equal(buffer.suppressed.has('u1'), false);
+  assert.equal(cueRows(captions)[0].raw, '预算还没有批准。');
+});
+
+test('a final non-speech result withdraws only its tentative source and does not block later speech', async t => {
+  const captions = [], calls = [];
+  const buffer = new SentenceBuffer({ captions, lane: new ModelLane(), partialMs: 0,
+    translate: async raw => { calls.push(raw); return complete(raw); },
+  });
+  t.after(() => buffer.close()); buffer.voice(Date.now());
+  buffer.receive({ id: 'u1', revision: 1, raw: '似乎有人讲话。', stable: '', final: false });
+  const revision = captionRevision(captions[0]); assert.equal(cueRows(captions).length, 1);
+  buffer.receive({ id: 'u1', revision: 2, raw: '', final: true, cutReason: 'pause' });
+  assert.deepEqual(cueRows(captions), []); assert.equal(buffer.current, null);
+  assert.ok(captionRevision(captions[0]) > revision); assert.equal(calls.length, 0);
+  buffer.receive({ id: 'u2', revision: 1, raw: '预算尚未批准。', final: true, cutReason: 'pause' });
+  await until(() => captions[1].final);
+  assert.equal(cueRows(captions)[0].raw, '预算尚未批准。');
 });
 
 test('out-of-order cue rows wait for their missing prefix and retain source order', async () => {
@@ -138,7 +237,7 @@ test('malformed SSE objects, truncated generations and oversized events use the 
   }
 });
 
-test('SSE can carry legacy flat or fenced JSON without publishing guessed partial fields', async () => {
+test('SSE can carry flat or fenced JSON without publishing guessed partial fields', async () => {
   const raw = '预算未批。';
   for (const content of [JSON.stringify({ ...trio(raw), complete: true }), '```json\n' + JSON.stringify(valueFor(raw)) + '\n```']) {
     const updates = [];
@@ -159,7 +258,10 @@ test('streamed captions remain provisional in snapshots and SRT until the comple
   t.after(() => buffer.close());
   buffer.voice(Date.now()); buffer.receive({ id: 'u1', raw, final: true, cutReason: 'pause', startMs: 0, endMs: 2000 });
   await until(() => buffer.metrics.requests === 1);
-  stream.content('{"cues":[' + JSON.stringify(rowsFor(raw)[0]) + ','); await until(() => cueRows(captions).length === 1);
+  assert.equal(cueRows(captions).map(c => c.raw).join(''), raw);
+  assert.ok(cueRows(captions).every(c => !Object.keys(c.translations).length));
+  stream.content('{"cues":[' + JSON.stringify(rowsFor(raw)[0]) + ','); await until(() => cueRows(captions)[0]?.translations.en);
+  assert.equal(cueRows(captions).length, 2); assert.deepEqual(cueRows(captions)[1].translations, {});
   assert.equal(captions[0].translations, null); assert.equal(captions[0].final, false);
   assert.equal(cueRows(captions)[0].final, false); store.sync(captions);
   assert.equal(fs.readFileSync(path.join(dir, subtitleFiles.original), 'utf8'), '');
@@ -192,9 +294,11 @@ test('rollback advances display revisions, removes invalid stream tails on deskt
   const stale = structuredClone(cueRows(captions)); assert.equal(browser.rows.length, 2);
   const revision = captionRevision(captions[0]);
   gate.resolve(); await until(() => !buffer.jobs.size);
-  assert.equal(browser.rows.length, 0); assert.ok(captionRevision(captions[0]) > revision);
-  browser.merge(stale); assert.equal(browser.rows.length, 0);
-  options.onProgress(complete(raw)); assert.equal(browser.rows.length, 0);
+  assert.equal(browser.rows.map(c => c.raw).join(''), raw); assert.ok(browser.rows.every(c => !Object.keys(c.translations).length));
+  assert.ok(captionRevision(captions[0]) > revision);
+  const restored = structuredClone(browser.rows);
+  browser.merge(stale); assert.deepEqual(browser.rows, restored);
+  options.onProgress(complete(raw)); assert.deepEqual(browser.rows, restored);
 });
 
 test('old source progress and late completions cannot overwrite a corrected final sentence', async t => {
@@ -233,8 +337,10 @@ test('stop drains an identical in-flight final stream without submitting a dupli
 test('desktop and phone snapshots share streamed groups; end waits for validation before writing SRT', async t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'http-stream-cues-'));
   const raw = '预算未批。日期未定。', stream = sse(); let requests = 0;
-  const service = createApp({ env: {}, dataDir: dir, transport: async url => {
+  const service = createApp({ env: {}, dataDir: dir, transport: async (url, options) => {
     if (String(url).endsWith('/audio/transcriptions')) return new Response(JSON.stringify({ text: raw }));
+    const schema = JSON.parse(JSON.parse(options.body).messages[0].content.split('\n')[1].slice('只返回 JSON：'.length, -1));
+    assert.equal(Object.keys(schema.cues[0])[2], 'yue');
     requests++; return stream.response;
   } });
   const server = await new Promise(resolve => { const listener = service.app.listen(0, '127.0.0.1', () => resolve(listener)); });
@@ -246,22 +352,31 @@ test('desktop and phone snapshots share streamed groups; end waits for validatio
   };
   await api('/api/settings', { asr: { baseURL: 'http://provider/v1', model: 'asr' }, translation: { model: 'translator', useAsrConnection: true } }, 'PUT');
   const session = await api('/api/sessions', { title: 'Stream regression' });
+  await api('/api/sessions/' + session.id + '/preferred-language', { language: 'yue' });
+  assert.equal((await api('/api/sessions/' + session.id)).status, 'ready'); assert.equal(requests, 0);
+  const invalidPreference = await fetch(base + '/api/sessions/' + session.id + '/preferred-language', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"language":"invalid"}' });
+  assert.equal(invalidPreference.status, 400);
   const share = await api('/api/sessions/' + session.id + '/share'), token = new URL(share.url).pathname.split('/').at(-1);
   const pcm = Buffer.concat([Buffer.from(new Int16Array(9600).fill(2400).buffer), Buffer.alloc(22400)]);
   const ack = await fetch(base + '/api/sessions/' + session.id + '/audio?startMs=0&chunkId=one', { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: pcm });
   assert.ok(ack.ok); await until(() => requests === 1);
+  const before = await api('/api/sessions/' + session.id);
+  assert.equal(before.captions.map(c => c.raw).join(''), raw); assert.ok(before.captions.every(c => !c.translations.en));
   stream.content('{"cues":[' + JSON.stringify(rowsFor(raw)[0]) + ',');
   let snapshot;
-  for (let n = 0; n < 100; n++) { snapshot = await api('/api/sessions/' + session.id); if (snapshot.captions.length) break; await sleep(5); }
-  assert.equal(snapshot.captions.length, 1); assert.equal(snapshot.captions[0].final, false);
+  for (let n = 0; n < 100; n++) { snapshot = await api('/api/sessions/' + session.id); if (snapshot.captions[0]?.translations.en) break; await sleep(5); }
+  assert.equal(snapshot.captions.length, 2); assert.equal(snapshot.captions[0].final, false);
+  assert.equal(snapshot.captions[1].translations.en, '');
   const phone = await api('/api/watch/' + token); assert.deepEqual(phone.captions, snapshot.captions);
-  assert.deepEqual(snapshot.captionParents[0].ids, [snapshot.captions[0].id]);
+  assert.deepEqual(snapshot.captionParents[0].ids, snapshot.captions.map(c => c.id));
   assert.equal(await (await fetch(base + '/api/sessions/' + session.id + '/subtitles/original')).text(), '');
   await api('/api/sessions/' + session.id + '/end', {}); await sleep(10);
   assert.equal(requests, 1); assert.equal((await api('/api/sessions/' + session.id)).status, 'finalizing');
   stream.content(JSON.stringify(rowsFor(raw)[1]) + '],"complete":true}'); stream.finish();
   for (let n = 0; n < 100; n++) { snapshot = await api('/api/sessions/' + session.id); if (snapshot.status === 'ended') break; await sleep(5); }
   assert.equal(snapshot.status, 'ended'); assert.equal(requests, 1);
+  const endedPreference = await fetch(base + '/api/sessions/' + session.id + '/preferred-language', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"language":"en"}' });
+  assert.equal(endedPreference.status, 409);
   assert.equal(snapshot.captions.length, 2); assert.ok(snapshot.captions.every(c => c.final));
   const saved = await (await fetch(base + '/api/sessions/' + session.id + '/subtitles/original')).text();
   assert.equal(saved.match(/ --> /g).length, 2); assert.match(saved, /预算未批。/); assert.match(saved, /日期未定。/);

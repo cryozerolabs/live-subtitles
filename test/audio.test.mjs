@@ -193,8 +193,9 @@ test('pause waits for late worklet PCM, uploads it once, and ignores messages fr
   audio.stop(); const draining = audio.drain(); let drained = false; draining.then(() => { drained = true; });
   await tick(); await audio.start(); assert.equal(starts, 1); assert.equal(stopped, 1); assert.equal(drained, false);
   onPcm(new ArrayBuffer(1216)); finish(); await draining;
-  assert.equal(sent.length, 1); assert.equal(sent[0].bytes.length, 4416); assert.equal(audio.timeMs, 138);
+  assert.equal(sent.length, 1); assert.equal(sent[0].bytes.length, 6400); assert.equal(audio.timeMs, 200);
+  assert.ok(sent[0].bytes.subarray(4416).every(byte => byte === 0));
   assert.equal(levels.at(-1), 0);
-  stale(new ArrayBuffer(3200)); assert.equal(audio.timeMs, 138);
+  stale(new ArrayBuffer(3200)); assert.equal(audio.timeMs, 200);
   await audio.start(); assert.equal(starts, 2); audio.stop(); finish(); await audio.drain();
 });

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import http from 'node:http';
-import { createApp } from '../src/server.js';
+import { createApp } from './helpers/service.mjs';
 import { MeetingDeletion } from '../src/storage/meeting-deletion.js';
 import { RecordingStore } from '../src/storage/recording-store.js';
 import { CaptionRuntime } from '../public/runtime.js';
@@ -22,7 +22,7 @@ async function fixture(t) {
   };
   const seed = (status = 'ended', audioBytes = 6400) => {
     const id = crypto.randomUUID(), token = crypto.randomBytes(32).toString('base64url');
-    fs.writeFileSync(path.join(dir, 'sessions', id + '.json'), JSON.stringify({ id, version: 2, mode: 'ming', title: 'Temporary deletion test', createdAt: new Date().toISOString(), status, startedAt: new Date().toISOString(), watchToken: token, segments: [], captions: [{ id: 'c1', revision: 1, final: true, raw: '尚未批准。', translations: { zhHans: '尚未批准。', en: 'Not approved yet.', yue: '仲未批。' }, startMs: 0, endMs: 200 }] }));
+    fs.writeFileSync(path.join(dir, 'sessions', id + '.json'), JSON.stringify({ id, version: 2, kind: 'meeting', title: 'Temporary deletion test', createdAt: new Date().toISOString(), status, startedAt: new Date().toISOString(), watchToken: token, segments: [], captions: [{ id: 'c1', revision: 1, final: true, raw: '尚未批准。', translations: { zhHans: '尚未批准。', en: 'Not approved yet.', yue: '仲未批。' }, startMs: 0, endMs: 200 }] }));
     if (audioBytes) new RecordingStore(path.join(dir, 'recordings', id)).append(crypto.randomBytes(audioBytes), { id: 'recorded', startMs: 0 });
     return { id, token, route: '/api/sessions/' + id };
   };
@@ -35,7 +35,8 @@ test('confirmed deletion purges all meeting files, revokes its token, and remain
   await x.api(s.route); await (await fetch(x.base + s.route + '/subtitles/original')).text();
   const checkpoint = fs.readFileSync(path.join(x.dir, 'sessions', s.id + '.json'), 'utf8');
   fs.writeFileSync(path.join(x.dir, 'current.json'), JSON.stringify({ id: s.id }));
-  fs.writeFileSync(path.join(x.dir, 'settings.json'), '{"private":"untouched"}');
+  const settings = JSON.stringify({ version: 2, asr: { baseURL: '', model: '', apiKey: 'fixture-private-key' }, translation: { baseURL: '', model: '', apiKey: '', useAsrConnection: false }, networkAddress: '' });
+  fs.writeFileSync(path.join(x.dir, 'settings.json'), settings);
   const host = await fetch(x.base + s.route + '/events', { signal: AbortSignal.timeout(5000) });
   const phone = await fetch(x.base + '/api/watch/' + s.token + '/events', { signal: AbortSignal.timeout(5000) });
   assert.equal((await x.api('/api/sessions/' + s.id.toUpperCase(), { confirm: true }, 'DELETE')).status, 200);
@@ -44,7 +45,7 @@ test('confirmed deletion purges all meeting files, revokes its token, and remain
   assert.equal((await x.api('/api/sessions')).body.items.some(row => row.id === s.id), false);
   for (const file of [path.join('sessions', s.id + '.json'), path.join('recordings', s.id), path.join('subtitles', s.id)]) assert.equal(fs.existsSync(path.join(x.dir, file)), false);
   assert.equal(fs.existsSync(path.join(x.dir, 'current.json')), false);
-  assert.equal(fs.readFileSync(path.join(x.dir, 'settings.json'), 'utf8'), '{"private":"untouched"}');
+  assert.equal(fs.readFileSync(path.join(x.dir, 'settings.json'), 'utf8'), settings);
   assert.equal((await x.api(other.route)).status, 200);
   assert.equal((await x.api(s.route, { confirm: true }, 'DELETE')).status, 200);
   assert.doesNotMatch(fs.readFileSync(path.join(x.dir, 'deleted', s.id + '.json'), 'utf8'), /approved|批准|Temporary|token/);

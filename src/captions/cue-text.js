@@ -71,6 +71,31 @@ export function cueRows(records, { finalizedPrefix = false } = {}) {
     if (finalizedPrefix && (c.final === false || !c.translations)) break;
     const draft = finalizedPrefix ? null : c.provisional;
     const translated = draft?.translations || c.translations;
+    // Live source revisions have their own display clock. Keep translations only
+    // on exactly matching source spans, never beside a corrected ASR hypothesis.
+    if (!finalizedPrefix && c.final === false) {
+      const source = c.sourcePreview || c;
+      const translatedSource = draft || c.translatedSource || c;
+      const raw = source.raw || '', anchored = [];
+      let offset = 0;
+      // A stable translated prefix may end before the growing ASR tail. Preserve
+      // its exact boundaries instead of stretching the row and hiding its text.
+      for (let id = 1; ; id++) {
+        const match = [draft?.translations, c.translations].flatMap(t => t?.cues || []).find(p => p.id === id && p.start === offset && raw.slice(p.start, p.end) === p.raw && p.end > offset);
+        if (!match) break;
+        anchored.push(match); offset = match.end;
+      }
+      const parts = [...anchored, ...splitCueText(raw.slice(offset)).map((part, index) => ({ ...part, id: anchored.length + index + 1, start: offset + part.start, end: offset + part.end }))];
+      for (const part of parts) {
+        const matches = [c.translations, draft?.translations].flatMap(t => t?.cues || []).filter(p => p.id === part.id && p.start === part.start && p.end === part.end && p.raw === part.raw);
+        const matched = matches.length ? Object.assign({}, ...matches.map(p => p.translations)) : null;
+        const flat = !translated?.cues && translatedSource.raw === source.raw && part.raw === source.raw ? translated : null;
+        rows.push({ id: `${c.id}:${part.id}`, parentId: c.id, revision: captionRevision(c), final: false,
+          raw: part.raw, startMs: sourceTime(source, part.start), endMs: sourceTime(source, part.end),
+          sourceStart: part.start, sourceEnd: part.end, translations: matched || flat || {}, timing: 'estimated' });
+      }
+      continue;
+    }
     if (!translated) continue;
     const parts = translated.cues, timing = draft || c.translatedSource || c;
     if (!parts?.length) {

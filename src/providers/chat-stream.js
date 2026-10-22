@@ -9,15 +9,22 @@ export function checkChoice(choice) {
   if (choice?.finish_reason === 'length') throw Object.assign(new Error('译文输出不完整，原文已保留，请重试。'), { kind: 'format' });
 }
 
-// A JSON parser emits only closed elements of the root cues array. Braces in
-// quoted text, nested objects and arbitrary UTF-8/token boundaries stay data.
-export function cueReader(onCue) {
-  const parser = new JSONParser({ paths: ['$.cues.*'], keepStack: false });
+// Publish closed strings, never token fragments. Restrict paths to root cues so
+// nested metadata cannot impersonate captions. Keep each row for final checks.
+export function cueReader(onCue, onField) {
+  const fields = ['id', 'source', 'zhHans', 'en', 'yue'];
+  const parser = new JSONParser({ paths: ['$.cues.*', ...fields.map(key => '$.cues.*.' + key)], keepStack: true });
   let disabled = false, failure;
   parser.onError = () => { disabled = true; };
-  parser.onValue = ({ value }) => { try { onCue(value); } catch (error) { failure = error; } };
+  parser.onValue = ({ value, key, parent }) => {
+    if (failure) return;
+    try {
+      if (fields.includes(key)) onField?.(Object.fromEntries(fields.filter(field => Object.hasOwn(parent, field)).map(field => [field, parent[field]])));
+      else onCue?.(value);
+    } catch (error) { failure = error; }
+  };
   return chunk => {
-    // Fenced/legacy JSON can still be accepted by the full-response parser.
+    // Fenced or flat JSON is validated after the complete response arrives.
     if (!disabled) parser.write(chunk);
     if (failure) throw failure;
   };

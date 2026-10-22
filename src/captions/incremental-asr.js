@@ -2,6 +2,9 @@
 import { pcmRms } from '../audio/pcm.js';
 
 const wordSegmenter = new Intl.Segmenter(undefined, { granularity: 'word' });
+const voiced = (frame, continuing = false) => frame.probability === undefined
+  ? frame.level >= .009 * (continuing ? .6 : 1)
+  : frame.probability >= (continuing ? .35 : .5);
 const normalized = text => text.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
 const scriptDrop = (prior, current) => {
   const han = text => [...text.matchAll(/\p{Script=Han}/gu)].length;
@@ -48,26 +51,26 @@ export class IncrementalAsr {
   get speaking() { return !!this.current && this.current.silence < 700; }
 
   make(frames = []) {
-    return { id: 'u' + ++this.seq, frames, voiced: frames.filter(f => f.level >= 0.009 * 0.6).length * 100,
+    return { id: 'u' + ++this.seq, frames, voiced: frames.filter(f => voiced(f, true)).length * 100,
       silence: 0, step: 0, previous: '', best: '', hypotheses: [], revision: 0, ended: false, done: false };
   }
 
-  feed(pcm, startMs) {
+  feed(pcm, startMs, probabilities) {
     if (this.closed) return;
     clearTimeout(this.idleTimer);
     for (let offset = 0; offset < pcm.length; offset += 3200) {
       const buffer = Buffer.from(pcm.subarray(offset, offset + 3200));
-      const frame = { buffer, start: startMs + offset / 32, level: pcmRms(buffer) };
-      if (frame.level >= 0.009 * (this.current ? 0.6 : 1)) {
+      const frame = { buffer, start: startMs + offset / 32, level: pcmRms(buffer), probability: probabilities?.[offset / 3200] };
+      if (voiced(frame, !!this.current)) {
         this.lastVoiceAt = this.now(); this.onVoice(this.lastVoiceAt);
       }
       if (!this.current) {
-        if (frame.level < 0.009) { this.pre.push(frame); if (this.pre.length > 3) this.pre.shift(); continue; }
+        if (!voiced(frame)) { this.pre.push(frame); if (this.pre.length > 3) this.pre.shift(); continue; }
         this.current = this.make([...this.pre, frame]); this.pre = [];
       } else {
         const u = this.current;
         u.frames.push(frame); u.step += 100;
-        if (frame.level >= 0.009 * 0.6) { u.voiced += 100; u.silence = 0; } else u.silence += 100;
+        if (voiced(frame, true)) { u.voiced += 100; u.silence = 0; } else u.silence += 100;
       }
       const u = this.current;
       if (u.silence >= 700) this.end('pause');

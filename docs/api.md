@@ -23,7 +23,8 @@
   },
   "configured": true,
   "networkAddress": "",
-  "networkAddresses": []
+  "networkAddresses": [],
+  "captureProtocol": 1
 }
 ```
 
@@ -52,11 +53,14 @@
 | `GET /api/sessions/current` | 获取或准备当前会议，不采音 |
 | `GET /api/sessions?before=<id>&limit=30` | 按时间倒序分页，返回 `items` 与 `next` |
 | `GET /api/sessions/:id` | 当前会议快照 |
+| `POST /api/sessions/:id/capture` | 正文 `{"captureId":"页面唯一编号"}`，预留本场采音权限，返回权威 `ingestEndMs`；不启用麦克风、不标记开始 |
+| `DELETE /api/sessions/:id/capture` | 正文同上，在音频上传与处理排空后释放采音权限 |
 | `POST /api/sessions/:id/start` | 开始或继续；浏览器仍需单独启用麦克风 |
 | `POST /api/sessions/:id/flush` | 排空识别与翻译，返回 202 |
 | `POST /api/sessions/:id/pause` | 标记暂停，调用方应先停止采音并排空 |
 | `POST /api/sessions/:id/end` | 异步结束并保存，返回 202；通过 SSE 等待完成 |
 | `GET /api/sessions/:id/events` | SSE 状态与字幕流 |
+| `POST /api/sessions/:id/preferred-language` | 正文 `{"language":"zhHans"}`，也支持 `en`、`yue`；设置下一次翻译优先输出的语言，不启动收音、不重发当前请求 |
 | `GET /api/sessions/:id/captions` | 完整历史的字幕分页 |
 | `GET /api/sessions/:id/share` | 获取本场观看 URL 与二维码 data URL |
 | `GET /api/sessions/:id/download` | 下载只含 SRT 和 WAV 的会议包 ZIP |
@@ -65,24 +69,29 @@
 
 会议状态为 `ready`、`recording`、`paused`、`finalizing`、`ended` 或 `interrupted`。结束操作需由界面确认后发起，API 本身不展示确认框。已保存会议不会在读取或下载时重新调用模型。
 
+支持 `captureProtocol: 1` 的客户端每页生成一个 `captureId`（10–80 个字母、数字、下划线或连字符）。先预留权限，再请求麦克风；`/start` 的正文和 `/audio` 的查询参数须携带相同编号。音频上传续期，15 秒无请求后其他页面可以接管。冲突返回 409，`code` 为 `capture_busy`；权限失效为 `capture_expired`。这用于防止多个页面同时采音，不是主持人身份认证。新一轮开始时仅在浏览器没有待上传音频的情况下同步 `ingestEndMs`；重试保留原音频编号、时间和内容。
+
 删除只允许已结束或已中断且处理完成的会议。仍在处理、保存或下载文件时返回 409；删除可幂等重试。成功删除使原观看令牌失效，已下载的文件不受影响。
 
 字幕分页支持 `before=<字幕ID>` 或 `after=<字幕ID>`，每次选择一种方向，`limit` 为 1–100，默认 60。返回 `items`、`hasBefore`、`hasAfter`、`total`。SRT 语言路径值为 `original`、`zhHans`、`en`、`yue`。
 
 ## 音频与增量字幕
 
-`POST /api/sessions/:id/audio?startMs=<毫秒>&chunkId=<唯一编号>` 使用 `application/octet-stream` 上传 16 kHz、单声道、little-endian PCM16 原始数据。当前协议按完整的 100 ms 帧接收，单次不超过 12 秒；浏览器通常每 200 ms 提交一次。音频与编号索引落盘后即确认上传，不等待模型完成。同一片段重试必须使用相同编号和内容，避免重复写入与识别。
+`POST /api/sessions/:id/audio?startMs=<毫秒>&chunkId=<唯一编号>&captureId=<页面编号>` 使用 `application/octet-stream` 上传 16 kHz、单声道、little-endian PCM16 原始数据。当前协议按完整的 100 ms 帧接收，单次不超过 12 秒；浏览器通常每 200 ms 提交一次，停止时将不足 100 ms 的尾帧补静音。音频与编号索引落盘后即确认上传，不等待本地人声检测或远程模型完成。同一片段重试必须使用相同编号和内容，避免重复写入与识别。
 
 SSE 默认消息为 JSON 快照，包含：
 
 - `captions`：最近 60 条字幕，含固定 `id`、`revision`、`final`、`raw`、`translations`、`startMs`、`endMs`；译文键为 `zhHans`、`en`、`yue`。
 - `captionParents`：同一识别修订对应的有效条目，用于收回被替换的临时尾部。
 - `status`、`draining`、`pendingFinals`、错误等运行信息。
+- `captureActive`：是否有尚未过期的采音预留；不返回页面编号。`metrics.vad` 记录本地人声检测帧数与耗时。
 - `update`：当前服务进程内递增版本；`epoch`：区分服务重启。
 
-客户端按 ID 更新字幕，忽略迟到的旧修订，已定稿内容保持稳定。`revision` 是递增的显示版本；同一段识别原文可能产生多次流式字幕更新。完整流式条目可提前出现，此时 `final: false`，只有完整响应校验通过后才定稿并写入 SRT。
+识别结果到达后先发布原文，此时 `translations` 的各语言值可以为空。完整语言字段从模型流中返回后逐个补入同一条字幕，原文修订时只保留源文本及偏移完全一致的译文。临时原文可随识别更正，翻译使用连续识别确认的稳定前缀，最终识别可更正当前未定稿句。
 
-失败或取消的临时条目通过更高版本的 `captionParents` 撤回；客户端须同时处理其 `ids`，移除被撤回的未定稿尾部，不能仅追加 `captions`。撤回后可恢复上次已校验译文。不要把累计识别文本逐次追加。完整历史通过分页获取。
+客户端按 ID 更新字幕，忽略迟到的旧修订，已定稿内容保持稳定。`revision` 是递增的显示版本；原文修订与各语言流式更新都会推进该版本。提前显示的原文和译文均为 `final: false`，只有全部三语、条目对齐、整份响应与结束信号校验通过后才定稿并写入 SRT。主持端语言偏好只影响下一次请求的字段顺序；手机端独立选择显示语言，三语始终生成。
+
+失败或取消的临时译文通过更高版本的字幕快照撤回，识别原文保留；可恢复上次已校验且与当前原文匹配的译文。客户端须同时处理 `captionParents.ids`，移除被替换的未定稿尾部，不能仅追加 `captions`。不要把累计识别文本逐次追加。完整历史通过分页获取。
 
 删除时发送命名 SSE 事件 `deleted`，正文为 `{"id":"会议ID"}`，随后关闭连接。
 

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { createApp } from '../src/server.js';
+import { createApp } from './helpers/service.mjs';
 import { recognize, translations } from '../src/providers/openai-compatible.js';
 
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status });
@@ -13,7 +13,7 @@ async function until(work) { for (let n = 0; n < 300; n++) { if (await work()) r
 const pcm = Buffer.concat([Buffer.from(new Int16Array(16000).fill(2500).buffer), Buffer.alloc(22400)]);
 const transcript = { zhHans: '预算尚未批准。', en: 'The budget has not been approved.', yue: '預算仲未批。', complete: true };
 async function fixture(t, transport) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'subtitle-upgrade-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'subtitle-service-'));
   const service = createApp({ dataDir: dir, env: {}, transport });
   const listener = await new Promise(resolve => { const server = service.app.listen(0, '127.0.0.1', () => resolve(server)); });
   t.after(async () => { service.close(); listener.closeAllConnections(); await new Promise(resolve => listener.close(resolve)); fs.rmSync(dir, { recursive: true, force: true }); });
@@ -27,25 +27,24 @@ async function fixture(t, transport) {
   return { dir, base, api, configure, audio };
 }
 
-test('old saved meetings remain readable without replay; new meetings use a neutral current schema', async t => {
+test('saved meetings remain readable without replay or rewriting their source file', async t => {
   let calls = 0;
   const x = await fixture(t, async () => { calls++; throw new Error('history must not invoke providers'); });
   const id = crypto.randomUUID();
   const file = path.join(x.dir, 'sessions', id + '.json');
-  const original = JSON.stringify({ id, mode: 'ming', version: 1, title: 'Saved meeting', status: 'ended', createdAt: new Date().toISOString(), segments: [{ id: 's1', raw: '预算尚未批准。', startMs: 0, endMs: 1000, translations: transcript }] });
+  const original = JSON.stringify({ id, kind: 'meeting', version: 2, title: 'Saved meeting', status: 'ended', createdAt: new Date().toISOString(), segments: [], captions: [{ id: 'c1', final: true, revision: 1, raw: '预算尚未批准。', startMs: 0, endMs: 1000, translations: transcript }] });
   fs.writeFileSync(file, original);
   const saved = await x.api('/api/sessions/' + id);
-  assert.equal(saved.status, 200); assert.equal(saved.value.segments[0].raw, '预算尚未批准。');
+  assert.equal(saved.status, 200); assert.equal(saved.value.captions[0].raw, '预算尚未批准。');
   assert.equal((await x.api('/api/sessions')).value.items[0].id, id);
   const srt = await fetch(x.base + '/api/sessions/' + id + '/subtitles/original');
   assert.equal(srt.status, 200); assert.match(await srt.text(), /预算尚未批准/);
   assert.equal(fs.readFileSync(file, 'utf8'), original); assert.equal(calls, 0);
-  assert.equal((await x.api('/api/sessions/' + id + '/end', {})).status, 409);
-  assert.equal((await x.api('/api/sessions', { draft: true, version: 1 })).status, 400);
+  assert.equal((await x.api('/api/sessions/' + id + '/retry-translations', {})).status, 409);
+  assert.equal((await x.api('/api/sessions', { draft: true, version: 0 })).status, 400);
   const current = (await x.api('/api/sessions', { draft: true, title: 'Current meeting' })).value;
   const data = JSON.parse(fs.readFileSync(path.join(x.dir, 'sessions', current.id + '.json'), 'utf8'));
   assert.equal(data.kind, 'meeting'); assert.equal(data.version, 2); assert.equal(data.mode, undefined);
-  for (const route of ['/capture.js', '/smooth.js']) assert.equal((await fetch(x.base + route)).status, 404);
   assert.equal((await fetch(x.base + '/pcm-worklet.js')).status, 200);
 });
 

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { ModelLane } from '../src/captions/model-lane.js';
 import { IncrementalAsr, agreedPrefix, restorePrefix } from '../src/captions/incremental-asr.js';
 import { SentenceBuffer, composeSources, sentenceCut } from '../src/captions/sentences.js';
-import { createApp } from '../src/server.js';
+import { createApp } from './helpers/service.mjs';
 import { translations } from '../src/providers/openai-compatible.js';
 import { CaptionRuntime } from '../public/runtime.js';
 
@@ -324,7 +324,8 @@ test('a final translation outage retains the recognized source and HTTP retry do
   assert.equal((await x.audio(pcm, 0, 'preserved-source')).status, 200);
   await until(async () => (await x.api('/api/sessions/' + x.session.id, {}, 'GET')).body.translationErrors === 1);
   const failed = (await x.api('/api/sessions/' + x.session.id, {}, 'GET')).body;
-  assert.equal(failed.segments[0].raw, '预算尚未批准。'); assert.equal(failed.captions.length, 0);
+  assert.equal(failed.segments[0].raw, '预算尚未批准。'); assert.equal(failed.captions[0].raw, '预算尚未批准。');
+  assert.equal(failed.captions[0].final, false); assert.equal(failed.captions[0].translations.en, '');
   const retained = JSON.parse(fs.readFileSync(path.join(x.dir, 'sessions', x.session.id + '.json')));
   assert.equal(retained.captions[0].translations, null); assert.equal(retained.captions[0].raw, '预算尚未批准。');
   const priorAsrCalls = asrCalls, priorTranslationCalls = translationCalls;

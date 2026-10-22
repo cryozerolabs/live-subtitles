@@ -48,7 +48,7 @@ Base URL: https://api.example.com/v1
 | `PORT` | HTTP 服务端口 | `8090` |
 | `DATA_DIR` | 数据目录 | 项目下的 `data/` |
 
-部署时可以使用进程环境变量，避免写入 `.env`。旧安装的扁平服务字段和旧环境变量仅作升级兼容；新配置使用上表字段。升级无需删除现有会议，旧会议读取不会自动重跑模型。
+部署时也可以直接设置上表中的进程环境变量。配置只使用 `asr` 和 `translation` 两组字段；读取配置不会改写本地文件。
 
 ## 服务端接口要求
 
@@ -63,7 +63,7 @@ Base URL: https://api.example.com/v1
 
 翻译服务使用 `POST <baseURL>/chat/completions`，接收 `model`、`messages`，默认请求 `stream: true`。SSE 的 `choices[0].delta.content` 承载逐步生成的 JSON 文本；完整短字幕条目到达后即可显示，整份响应校验通过后定稿。服务直接返回普通 JSON 时也可读取 `choices[0].message.content`。明确以 HTTP 400 报告不支持 `stream` 时，应用改用非流式请求。
 
-应用请求中、英、粤字幕及表达完整性判断。每条输出包含对应的 `id`、`source`、`zhHans`、`en`、`yue`，整个对象含布尔字段 `complete`。`source` 用于核对编号与原文，不能把相邻条目的内容移入当前条目。已有服务省略 `source` 的响应仍可读取；单条字幕保留旧版扁平三语响应兼容。
+应用请求中、英、粤字幕及表达完整性判断。每条输出包含对应的 `id`、`source`、`zhHans`、`en`、`yue`，整个对象含布尔字段 `complete`。`source` 用于核对编号与原文，不能把相邻条目的内容移入当前条目。省略 `source` 的响应等待完整条目后校验；只有一条字幕时，也可读取扁平的三语 JSON 对象。
 
 请求默认使用 `response_format: {"type":"json_object"}`、`temperature: 0` 与 `max_completion_tokens`。明确报告参数不兼容的 HTTP 400 响应可触发有限降级：移除不支持的参数，或改用 `max_tokens`。格式或分条异常自动重试一次；失败尝试的流式临时字幕会撤回，已校验字幕继续保留。
 

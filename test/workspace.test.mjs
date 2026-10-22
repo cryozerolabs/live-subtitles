@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { createApp } from '../src/server.js';
+import { createApp } from './helpers/service.mjs';
 import { CaptionRuntime } from '../public/runtime.js';
 import { VoiceMeter, levelHeight } from '../public/waveform.js';
 
@@ -146,10 +146,11 @@ test('saving only network access leaves active capture and the configured connec
 
 test('a failed audio upload prevents changing service settings and preserves the audio for retry', async () => {
   let settingsWrites = 0;
-  const session = { id: 'retained-audio', version: 2, status: 'recording', captions: [] };
+  const session = { id: 'retained-audio', version: 2, status: 'ready', captions: [] };
   const r = new CaptionRuntime({
     api: async (url, options) => {
       if (url === '/api/settings') { if (options?.method === 'PUT') settingsWrites++; return { configured: true, asr: { model: 'asr' } }; }
+      if (url.endsWith('/start')) session.status = 'recording';
       if (url.includes('/audio?')) throw new Error('upload unavailable');
       return { ...session };
     }, capture: async () => ({ ctx: { state: 'running' }, stop() {} }), subscribe: () => () => {},

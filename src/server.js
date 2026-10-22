@@ -17,6 +17,7 @@ import { SettingsStore, connection, publicSettings as settingsView, settingsRead
 import { ModelLane } from './captions/model-lane.js';
 import { IncrementalAsr } from './captions/incremental-asr.js';
 import { SentenceBuffer } from './captions/sentences.js';
+import { createSpeechDetector, SpeechPipeline } from './audio/speech-detector.js';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 dotenv.config({ path: path.join(ROOT, '.env'), quiet: true });
@@ -27,10 +28,9 @@ const write = (file, value) => {
   fs.writeFileSync(temp, JSON.stringify(value), { mode: 0o600 });
   fs.renameSync(temp, file);
 };
-const skippableTranslation = kind => ['refusal', 'format'].includes(kind);
-const isMeeting = data => data && (data.kind === 'meeting' || data.mode === 'ming');
+const isMeeting = data => data?.kind === 'meeting' && data.version === 2 && Array.isArray(data.segments) && Array.isArray(data.captions);
 
-export function createApp({ dataDir = path.join(ROOT, 'data'), transport = fetch, disconnectMs = 15000, recordingPartBytes, env = process.env } = {}) {
+export function createApp({ dataDir = path.join(ROOT, 'data'), transport = fetch, disconnectMs = 15000, recordingPartBytes, env = process.env, speechDetectorFactory = createSpeechDetector, captureLeaseMs = 15000, captureNow = Date.now } = {}) {
   const deletion = new MeetingDeletion(dataDir); deletion.recover();
   const sessionDir = path.join(dataDir, 'sessions');
   fs.mkdirSync(sessionDir, { recursive: true });
@@ -41,7 +41,7 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), transport = fetch
     if (!subtitleStores.has(ctx.data.id)) subtitleStores.set(ctx.data.id, new SubtitleStore(path.join(dataDir, 'subtitles', ctx.data.id)));
     return subtitleStores.get(ctx.data.id);
   };
-  const records = ctx => ctx.data.version === 2 ? ctx.data.captions : ctx.data.segments;
+  const records = ctx => ctx.data.captions;
   const captionParents = ctx => records(ctx).slice(-60).map(c => ({ id: c.id, revision: captionRevision(c), ids: cueRows([c]).map(row => row.id) }));
   const epoch = crypto.randomUUID();
   const currentFile = path.join(dataDir, 'current.json');
@@ -54,11 +54,18 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), transport = fetch
   const summary = ctx => recorders.get(ctx.data.id)?.summary() || ctx.data.recording || { available: false, bytes: 0, durationMs: 0, parts: [] };
 
   const asrLane = new ModelLane(), translationLane = new ModelLane();
-  const publicSettings = () => ({ ...settingsView(settings), networkAddresses: addresses() });
+  const publicSettings = () => ({ ...settingsView(settings), networkAddresses: addresses(), captureProtocol: 1 });
+  const captureError = (message, code = 'capture_busy') => Object.assign(fail(message, 409), { code });
+  const checkCapture = (ctx, req) => {
+    const id = req.query.captureId ?? req.body?.captureId;
+    if (ctx.captureOwner && id !== ctx.captureOwner) throw captureError('另一个页面正在收音，请先在该页面暂停。');
+    if (!ctx.captureOwner && id !== undefined) throw captureError('采音权限已失效，请重新点击开始收音。', 'capture_expired');
+    if (ctx.captureOwner) ctx.captureSeenAt = captureNow();
+  };
   // Full transcripts stay on disk; a bounded live snapshot keeps long-running pages small.
   const view = ctx => {
     const terminal = ['ended', 'interrupted'].includes(ctx.data.status);
-    const records = ctx.data.version === 2 ? ctx.data.captions : ctx.data.segments;
+    const records = ctx.data.captions;
     const skipped = records.filter(s => s.translationSkipped || s.skipped);
     const failures = records.filter(s => s.translationError && !s.translationSkipped && !s.skipped);
     const refusals = failures.filter(s => s.translationErrorKind === 'refusal');
@@ -68,13 +75,14 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), transport = fetch
       createdByUser: !!ctx.data.createdByUser, status: ctx.data.status || 'ended', startedAt: ctx.data.startedAt, endedAt: ctx.data.endedAt,
       recording: summary(ctx), ingestEndMs: ctx.data.ingestEndMs || recorders.get(ctx.data.id)?.endMs || 0, saveError: ctx.saveError || null, epoch,
       update: ctx.update || 0,
-      version: ctx.data.version || 1,
+      captureActive: !!ctx.captureOwner && captureNow() - ctx.captureSeenAt < captureLeaseMs,
+      version: ctx.data.version,
       segments: ctx.data.segments.slice(-60), segmentCount: ctx.data.segments.length,
-      ...(ctx.data.version === 2 ? { captions: captionList(ctx).slice(-60), captionCount: captionList(ctx).length, captionParents: captionParents(ctx), captionSchema: 'cue-v1',
-        pendingFinals: (ctx.asr?.pendingFinals || 0) + (ctx.sentences?.pendingFinals || 0),
-        backpressure: (ctx.asr?.pendingFinals || 0) + (ctx.sentences?.pendingFinals || 0) >= 12,
-        draining: !!ctx.draining, metrics: { asr: ctx.asr?.metrics, translation: ctx.sentences?.metrics, providerRequests: ctx.providerRequests } } : {}),
-      processing: !terminal && !!ctx.asr?.processing, pendingTranslations: terminal ? 0 : ctx.sentences?.pending || 0,
+      captions: captionList(ctx).slice(-60), captionCount: captionList(ctx).length, captionParents: captionParents(ctx), captionSchema: 'cue-v1',
+      pendingFinals: (ctx.asr?.pendingFinals || 0) + (ctx.sentences?.pendingFinals || 0),
+      backpressure: (ctx.asr?.pendingFinals || 0) + (ctx.sentences?.pendingFinals || 0) >= 12 || ctx.speech?.pendingMs >= 12000,
+      draining: !!ctx.draining, metrics: { asr: ctx.asr?.metrics, translation: ctx.sentences?.metrics, vad: ctx.speech?.metrics, providerRequests: ctx.providerRequests },
+      processing: !terminal && (!!ctx.asr?.processing || ctx.speech?.pendingMs > 0), pendingTranslations: terminal ? 0 : ctx.sentences?.pending || 0,
       translationErrors: failures.length, translationRefusals: refusals.length, translationSkipped: skipped.length,
       translationFailure: latest ? { segmentId: latest.id, message: latest.translationError, kind: latest.translationErrorKind || 'processing' } : null,
       error: ctx.error || null,
@@ -108,19 +116,11 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), transport = fetch
     if (!sessions.has(id)) {
       const data = read(path.join(sessionDir, id + '.json'), null);
       if (!isMeeting(data)) throw fail('找不到这场字幕。', 404);
-      data.kind = 'meeting'; delete data.mode;
-      data.status ||= 'ended';
-      for (const s of data.version === 2 ? [] : data.segments) {
-        if (!s.translations && !s.translationError) s.translationError = '翻译已中断，请重试。';
-        if (!s.translationErrorKind && /三语 JSON|缺少完整的中、英、粤译文/.test(s.translationError || '')) s.translationErrorKind = 'format';
-        if (s.translationError && skippableTranslation(s.translationErrorKind)) s.translationSkipped = true;
-      }
-      // Old sessions are display-only until new audio explicitly arrives. Never replay
-      // a saved transcript merely because the browser reconnects after a restart.
-      if (data.version === 2) for (const c of data.captions) {
+      // Restore display state without rerunning saved audio or text through models.
+      for (const c of data.captions) {
         // A saved stream overlay was never validated as a complete response.
         if (c.provisional) { delete c.provisional; c.displayRevision = captionRevision(c) + 1; }
-        if (!c.final) { if (!data.status) c.final = true; c.interrupted = true; }
+        if (!c.final) c.interrupted = true;
       }
       const ctx = context(data); sessions.set(id, ctx);
       if (fs.existsSync(path.join(dataDir, 'recordings', id))) {
@@ -140,8 +140,8 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), transport = fetch
     const tracked = kind => (...args) => { ctx.providerRequests[kind]++; return transport(...args); };
     ctx.sentences = new SentenceBuffer({
       captions: ctx.data.captions, lane: translationLane,
-      translate: (raw, prior, options) => translations(raw, connection(settings, 'translation'), tracked('translation'), prior, options),
-      asrPending: () => ctx.asr?.pendingFinals > 0, speaking: () => ctx.asr?.speaking,
+      translate: (raw, prior, options) => translations(raw, connection(settings, 'translation'), tracked('translation'), prior, { ...options, priorityLanguage: ctx.captionLanguage || 'zhHans' }),
+      asrPending: () => ctx.asr?.pendingFinals > 0 || ctx.speech?.pendingMs > 0, speaking: () => ctx.asr?.speaking,
       onError: e => { ctx.error = e.message; changed(ctx); }, onChange: () => changed(ctx),
     });
     ctx.asr = new IncrementalAsr({
@@ -158,11 +158,15 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), transport = fetch
       onChange: () => { ctx.sentences.notify(); changed(ctx, false); },
       onError: e => { ctx.error = e.message; changed(ctx); },
     });
+    ctx.speech = new SpeechPipeline({ factory: speechDetectorFactory,
+      onFrame: (pcm, startMs, probability) => ctx.asr.feed(pcm, startMs, [probability]),
+      onError: e => { ctx.error = e.message; changed(ctx); }, onChange: () => { ctx.sentences.notify(); changed(ctx, false); },
+    });
   };
   const drain = ctx => {
     if (ctx.drainPromise) return ctx.drainPromise;
     streaming(ctx); ctx.draining = true; changed(ctx);
-    ctx.drainPromise = (async () => { await ctx.asr.drain(); await ctx.sentences.flush(); })()
+    ctx.drainPromise = (async () => { await ctx.speech.drain(); await ctx.asr.drain(); await ctx.sentences.flush(); ctx.speech.reset(); })()
       .finally(() => { ctx.draining = false; ctx.drainPromise = null; changed(ctx); });
     return ctx.drainPromise;
   };
@@ -174,14 +178,11 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), transport = fetch
     if (makeCurrent) write(currentFile, { id: data.id });
     return ctx;
   };
-  // Early local previews left sample sessions in this directory. They are not
-  // real meetings and get() intentionally rejects them; exclude them before
-  // listing so one preview record cannot prevent access to saved meetings.
   const allIds = () => fs.readdirSync(sessionDir).filter(v => /^[\da-f-]{36}\.json$/i.test(v))
     .filter(v => !deletion.has(v.slice(0, -5)) && isMeeting(read(path.join(sessionDir, v), {}))).map(v => v.slice(0, -5));
   const current = () => {
     const id = read(currentFile, {}).id;
-    if (id) { try { const ctx = get(id); if (ctx.data.version === 2 || ['ended', 'interrupted'].includes(ctx.data.status)) return ctx; } catch (e) { if (e.status !== 404) throw e; } }
+    if (id) { try { return get(id); } catch (e) { if (e.status !== 404) throw e; } }
     return newSession();
   };
   const publicCaption = c => ({ id: c.id, parentId: c.parentId, timing: c.timing, raw: c.raw || '', revision: c.revision || 0, final: c.final !== false,
@@ -211,7 +212,7 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), transport = fetch
       try { await drain(ctx); } catch (e) { ctx.error = e.message; }
       // Audio saving is independent of a provider failure. Preserve incomplete text
       // and its state; an ended meeting is never sent back to the models on read.
-      ctx.asr?.close(); ctx.sentences?.close(); ctx.fedChunks.clear();
+      ctx.speech?.close(); ctx.asr?.close(); ctx.sentences?.close(); ctx.fedChunks.clear(); ctx.captureOwner = null;
       ctx.data.status = interrupted ? 'interrupted' : 'ended'; ctx.data.endedAt = new Date().toISOString();
       try { persist(ctx); } catch {
         ctx.data.status = 'finalizing'; ctx.saveError = '会议未全部保存，请检查磁盘空间后重试保存。';
@@ -292,7 +293,7 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), transport = fetch
       if (!['ended', 'interrupted'].includes(ctx.data.status) || ctx.endPromise || ctx.drainPromise || ctx.asr?.processing || ctx.sentences?.pending) throw fail('请先结束会议并完成保存，再删除。', 409);
       if (ctx.downloads) throw fail('会议文件正在下载，请完成后再删除。', 409);
       try { deletion.mark(id); } catch { throw fail('无法记录删除操作，会议未删除，请检查磁盘权限后重试。', 503); }
-      ctx.deleted = true; ctx.closed = true; clearTimeout(ctx.disconnectTimer); ctx.asr?.close(); ctx.sentences?.close();
+      ctx.deleted = true; ctx.closed = true; clearTimeout(ctx.disconnectTimer); ctx.speech?.close(); ctx.asr?.close(); ctx.sentences?.close();
       for (const client of [...ctx.watchers, ...ctx.viewers]) { client.write('event: deleted\ndata: ' + JSON.stringify({ id }) + '\n\n'); client.end(); }
       ctx.watchers.clear(); ctx.viewers.clear(); sessions.delete(id); recorders.delete(id); subtitleStores.delete(id);
     }
@@ -302,10 +303,38 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), transport = fetch
   app.get('/api/sessions/:id', (req, res) => res.json(view(get(req.params.id))));
   app.get('/api/sessions/:id/captions', (req, res) => res.json(pageCaptions(get(req.params.id), req.query)));
   app.get('/api/sessions/:id/events', (req, res) => events(get(req.params.id), req, res));
+  app.post('/api/sessions/:id/capture', (req, res) => {
+    const ctx = get(req.params.id), id = req.body?.captureId;
+    if (typeof id !== 'string' || !/^[\w-]{10,80}$/.test(id)) throw fail('采音页面编号无效。');
+    if (['ended', 'interrupted', 'finalizing'].includes(ctx.data.status)) throw fail('本场会议已结束。', 409);
+    if (ctx.draining) throw captureError('上一轮音频仍在排空，请稍后继续。');
+    const held = ctx.captureOwner && captureNow() - ctx.captureSeenAt < captureLeaseMs;
+    if ((held && ctx.captureOwner !== id) || (!ctx.captureOwner && ctx.data.status === 'recording')) throw captureError('另一个页面正在收音，请先在该页面暂停。');
+    // Reserve before requesting microphone permission. Audio uploads renew the
+    // lease; an abandoned permission prompt or closed tab expires automatically.
+    ctx.captureOwner = id; ctx.captureSeenAt = captureNow();
+    res.json({ ingestEndMs: Math.max(ctx.data.ingestEndMs || 0, recorders.get(ctx.data.id)?.endMs || 0) });
+  });
+  app.delete('/api/sessions/:id/capture', (req, res) => {
+    const ctx = get(req.params.id);
+    if (ctx.captureOwner) checkCapture(ctx, req);
+    if (ctx.draining || ctx.speech?.pendingMs || ctx.asr?.processing || ctx.sentences?.pending) throw captureError('音频尚未处理完成，请稍后暂停。');
+    ctx.captureOwner = null;
+    if (ctx.data.status === 'recording') ctx.data.status = 'paused';
+    changed(ctx); res.json({ released: true });
+  });
+  app.post('/api/sessions/:id/preferred-language', (req, res) => {
+    const ctx = get(req.params.id), language = req.body?.language;
+    if (!['zhHans', 'en', 'yue'].includes(language)) throw fail('请选择中文、English 或粵語。');
+    if (['ended', 'interrupted', 'finalizing'].includes(ctx.data.status)) throw fail('本场会议已结束。', 409);
+    // Scheduling preference only: all languages remain in each translation. Do
+    // not restart a request or microphone when the host switches the display.
+    ctx.captionLanguage = language; res.json({ language });
+  });
   app.post('/api/sessions/:id/start', (req, res) => {
     const ctx = get(req.params.id);
+    checkCapture(ctx, req);
     if (!settingsReady(settings)) throw fail('请先完成识别与翻译服务设置。');
-    if (ctx.data.version !== 2) throw fail('旧会议仅供回看，请新建会议。', 409);
     if (['ended', 'interrupted', 'finalizing'].includes(ctx.data.status)) throw fail('本场会议已结束，请开始新会议。', 409);
     ctx.data.status = 'recording'; ctx.data.startedAt ||= new Date().toISOString(); changed(ctx); res.json(view(ctx));
   });
@@ -316,7 +345,6 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), transport = fetch
   });
   app.post('/api/sessions/:id/end', (req, res) => {
     const ctx = get(req.params.id);
-    if (ctx.data.version !== 2) throw fail('旧会议仅供回看，请新建会议。', 409);
     void end(ctx).catch(e => { ctx.saveError = e.message; broadcast(ctx); }); res.status(202).json(view(ctx));
   });
   app.post('/api/sessions/:id/interrupt', (req, res) => {
@@ -361,29 +389,28 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), transport = fetch
   app.post('/api/sessions/:id/retry-translations', (req, res) => {
     const ctx = get(req.params.id);
     if (['ended', 'interrupted'].includes(ctx.data.status)) throw fail('已保存会议不会重新调用服务。', 409);
-    if (ctx.data.version !== 2) throw fail('旧会议仅供回看，请新建会议。', 409);
     if (ctx.drainPromise) return res.status(202).json(view(ctx));
     streaming(ctx); ctx.error = null;
     ctx.draining = true;
-    ctx.drainPromise = (async () => { await ctx.asr.retry(); await ctx.sentences.retry(); })()
+    ctx.drainPromise = (async () => { await ctx.speech.retry(); await ctx.asr.retry(); await ctx.sentences.retry(); ctx.speech.reset(); })()
       .catch(e => { ctx.error = e.message; }).finally(() => { ctx.draining = false; ctx.drainPromise = null; changed(ctx); });
     changed(ctx); res.status(202).json(view(ctx));
   });
   app.post('/api/sessions/:id/flush', (req, res) => {
     const ctx = get(req.params.id);
-    if (['ended', 'interrupted'].includes(ctx.data.status) || ctx.data.version !== 2) throw fail('已保存会议不会重新调用服务。', 409);
+    if (['ended', 'interrupted'].includes(ctx.data.status)) throw fail('已保存会议不会重新调用服务。', 409);
     void drain(ctx).catch(e => { ctx.error = e.message; changed(ctx); });
     res.status(202).json(view(ctx));
   });
   app.post('/api/sessions/:id/audio', express.raw({ type: 'application/octet-stream', limit: '400kb' }), async (req, res) => {
     const ctx = get(req.params.id);
+    checkCapture(ctx, req);
     if (['ended', 'interrupted', 'finalizing'].includes(ctx.data.status)) throw fail('本场会议已结束，无法追加录音。', 409);
     if (!Buffer.isBuffer(req.body) || !req.body.length || req.body.length % 2 || req.body.length > 32000 * 12) throw fail('音频须为不超过 12 秒的 16 kHz 单声道 PCM16。');
     const startMs = Number(req.query.startMs), durationMs = req.body.length / 32;
     if (!Number.isSafeInteger(startMs) || startMs < 0 || startMs > Number.MAX_SAFE_INTEGER - durationMs) throw fail('音频时间无效。');
     const chunkId = String(req.query.chunkId || '');
     if (chunkId && !/^[\w-]{1,80}$/.test(chunkId)) throw fail('音频片段编号无效。');
-    if (ctx.data.version !== 2) throw fail('旧会议仅供回看，请新建会议。', 409);
     if (!chunkId || req.body.length % 3200) throw fail('请提交带编号的完整 100ms PCM 音频帧。');
     const store = recorder(ctx);
     const receipt = store.receipts.get(chunkId);
@@ -393,7 +420,7 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), transport = fetch
         ctx.data.ingestEndMs = Math.max(ctx.data.ingestEndMs || 0, receipt.endMs);
         ctx.data.status = 'recording'; ctx.data.startedAt ||= new Date().toISOString();
         if (!ctx.audioMetadataSaved) { persist(ctx); ctx.audioMetadataSaved = true; }
-        streaming(ctx); ctx.fedChunks.add(chunkId); ctx.asr.feed(req.body, startMs); }
+        streaming(ctx); ctx.fedChunks.add(chunkId); ctx.speech.feed(req.body, startMs); }
       return res.json({ accepted: true, endMs: receipt.endMs });
     }
     if (startMs < ctx.data.ingestEndMs) throw fail('音频时间重叠，未再次接收。', 409);
@@ -407,20 +434,20 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), transport = fetch
     ctx.data.ingestEndMs = startMs + durationMs;
     ctx.data.receipts.push({ id: chunkId, endMs: ctx.data.ingestEndMs });
     if (ctx.data.receipts.length > 300) ctx.data.receipts.shift();
-    ctx.fedChunks.add(chunkId); ctx.asr.feed(req.body, startMs); changed(ctx, false);
+    ctx.fedChunks.add(chunkId); ctx.speech.feed(req.body, startMs); changed(ctx, false);
     if (!accepted) throw fail('录音未能确认保存。', 503);
     return res.json({ accepted: true, endMs: ctx.data.ingestEndMs });
   });
   app.use(express.static(path.join(ROOT, 'public')));
   app.use((err, _req, res, _next) => {
     const message = err.name === 'TimeoutError' ? '服务响应超时，请重试。' : err.message === 'fetch failed' ? '无法连接服务，请检查设置。' : err.type === 'entity.too.large' ? '音频片段过大。' : err.message;
-    res.status(err.status || 502).json({ error: message || '处理失败，请重试。' });
+    res.status(err.status || 502).json({ error: message || '处理失败，请重试。', ...(['capture_busy', 'capture_expired'].includes(err.code) ? { code: err.code } : {}) });
   });
   return { app, close: () => {
     for (const ctx of sessions.values()) {
       clearTimeout(ctx.disconnectTimer);
       if (ctx.data.status === 'recording' || ctx.data.status === 'finalizing') { ctx.data.status = 'interrupted'; ctx.data.endedAt = new Date().toISOString(); try { persist(ctx); } catch {} }
-      ctx.closed = true; ctx.asr?.close(); ctx.sentences?.close();
+      ctx.closed = true; ctx.speech?.close(); ctx.asr?.close(); ctx.sentences?.close();
       for (const res of [...ctx.watchers, ...ctx.viewers]) res.end();
     }
   } };

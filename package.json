@@ -30,7 +30,13 @@
     "eventsource-parser": "^3.1.1",
     "express": "5.2.1",
     "opencc-js": "1.4.2",
+    "onnxruntime-node": "1.22.0",
     "qrcode": "^1.5.4"
+  },
+  "overrides": {
+    "onnxruntime-node": {
+      "adm-zip": "0.6.1"
+    }
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

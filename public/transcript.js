@@ -90,6 +90,7 @@ export class Transcript {
         if (source.textContent !== (row.raw || '')) source.textContent = row.raw || '';
         source.hidden = !row.raw;
         if (translation.textContent !== text) translation.textContent = text;
+        translation.hidden = !text;
         translation.lang = { zhHans: 'zh-CN', en: 'en', yue: 'yue-Hant' }[this.language];
       } else if (node.textContent !== text) node.textContent = text;
       const changed = node.dataset.revision !== String(row.revision || 0) || node.dataset.final !== String(row.final !== false);

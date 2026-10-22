@@ -7,8 +7,9 @@ export class CaptionRuntime {
     this.userStopped = false; this.busy = false; this.error = null; this.errorKind = null; this.lastVoiceAt = 0;
     this.startedHere = false; this.pausing = false; this.pausePromise = null;
     this.state = 'loading'; this.translationFailed = false; this.resumeAfterDrain = false; this.drainPromise = null; this.destroyed = false; this.drainWaiters = []; this.endWaiters = []; this.ending = false; this.endFailed = false;
+    this.captureId = crypto.randomUUID(); this.captureOwned = false;
     this.audio = new CaptionAudio({ capture,
-      send: chunk => this.api('/api/sessions/' + this.session.id + '/audio?startMs=' + chunk.startMs + '&chunkId=' + chunk.chunkId + '&capturedAt=' + chunk.capturedAt, { body: chunk.body }),
+      send: chunk => this.api('/api/sessions/' + this.session.id + '/audio?startMs=' + chunk.startMs + '&chunkId=' + chunk.chunkId + '&capturedAt=' + chunk.capturedAt + (this.settings?.captureProtocol ? '&captureId=' + this.captureId : ''), { body: chunk.body }),
       onChange: () => { this.emit(); this.maybeResume(); }, onError: (message, kind) => {
         if (kind === 'backpressure') this.pauseForPressure();
         else { this.setError(message, kind); if (kind === 'microphone') void this.finishCapture(); }
@@ -25,7 +26,7 @@ export class CaptionRuntime {
     else if (['ended', 'interrupted'].includes(this.session?.status) && !audio.pending && !audio.sending) phase = 'ended';
     else if (this.pausing) phase = 'draining';
     else if (audio.starting || this.busy) phase = 'starting';
-    else if (audio.recording) phase = (this.session?.captions || this.session?.segments || []).some(c => c.translations) ? 'live' : 'waiting';
+    else if (audio.recording) phase = (this.session?.captions || []).some(c => c.translations) ? 'live' : 'waiting';
     else if (audio.sending || audio.pending || this.drainPromise || this.session?.pendingTranslations || this.session?.draining) phase = 'draining';
     else phase = this.state;
     return { phase, audio, settings: this.settings, session: this.session, error: this.error, errorKind: this.errorKind, userStopped: this.userStopped, ending: this.ending, endFailed: this.endFailed, lastVoiceAt: this.lastVoiceAt, pausing: this.pausing, startedHere: this.startedHere };
@@ -127,7 +128,7 @@ export class CaptionRuntime {
     }
     if (['ended', 'interrupted'].includes(session.status)) {
       if (this.audio.recording || this.audio.starting) this.audio.stop();
-      this.resumeAfterDrain = false; this.userStopped = true;
+      this.resumeAfterDrain = false; this.userStopped = true; this.captureOwned = false;
       if (!this.ending) this.state = 'ended';
       this.emit(); return;
     }
@@ -136,13 +137,13 @@ export class CaptionRuntime {
     if (session.translationErrors) {
       this.translationFailed = true;
       if (this.audio.recording) this.audio.stop();
-      const failure = session.translationFailure?.message || (session.captions || session.segments || []).findLast(s => s.translationError)?.translationError;
+      const failure = session.translationFailure?.message || (session.captions || []).findLast(s => s.translationError)?.translationError;
       this.setError(failure || '部分字幕翻译未完成，原文已保留，请重试。'); return;
     }
     if (this.translationFailed && !session.pendingTranslations) {
       this.translationFailed = false; this.error = null; this.errorKind = null; this.state = 'stopped';
     }
-    if ((session.backpressure || (session.version !== 2 && session.pendingTranslations >= 12)) && this.audio.recording) this.pauseForPressure();
+    if (session.backpressure && this.audio.recording) this.pauseForPressure();
     this.emit(); this.maybeResume();
   }
 
@@ -153,8 +154,16 @@ export class CaptionRuntime {
     try {
       await this.ensureSession();
       if (this.userStopped || this.destroyed) { this.state = 'stopped'; return; }
+      if (this.settings.captureProtocol) {
+        const claim = await this.api('/api/sessions/' + this.session.id + '/capture', { data: { captureId: this.captureId } });
+        this.captureOwned = true;
+        // Only synchronize an empty queue. Never move pending audio forward to
+        // conceal a conflict with another microphone's recording.
+        this.audio.timeMs = Math.max(this.audio.timeMs, claim.ingestEndMs || 0);
+      } else if (this.session.status === 'recording' && !this.startedHere) throw new Error('另一个页面正在收音，请先在该页面暂停。');
+      if (this.userStopped || this.destroyed) { this.state = 'stopped'; return; }
       await this.audio.start();
-      if (this.audio.recording) { this.startedHere = true; this.receive(await this.api('/api/sessions/' + this.session.id + '/start', { data: {} })); }
+      if (this.audio.recording) { this.startedHere = true; this.receive(await this.api('/api/sessions/' + this.session.id + '/start', { data: this.settings.captureProtocol ? { captureId: this.captureId } : {} })); }
       this.state = this.audio.recording ? 'waiting' : 'ready';
     }
     catch (e) {
@@ -162,7 +171,16 @@ export class CaptionRuntime {
       const microphone = ['NotAllowedError', 'NotFoundError', 'NotReadableError', 'SecurityError'].includes(e.name);
       const message = e.name === 'NotAllowedError' ? e.reason === 'permission-timeout' ? '浏览器尚未返回麦克风授权，请点击“启用麦克风”并完成权限提示。' : e.reason === 'autoplay' ? '浏览器阻止了自动收音，请点击“启用麦克风”。' : '浏览器未允许使用麦克风，请在站点权限中允许后点击“启用麦克风”。' : e.name === 'NotFoundError' ? '没有找到麦克风，请连接设备后启用。' : e.name === 'NotReadableError' ? '无法使用麦克风，请检查设备或其他应用是否占用。' : e.message;
       this.setError(message, microphone ? 'microphone' : 'connection');
-    } finally { this.busy = false; this.emit(); }
+    } finally {
+      if (!this.audio.busy && this.captureOwned) await this.releaseCapture().catch(e => this.setError(e.message));
+      this.busy = false; this.emit();
+    }
+  }
+
+  async releaseCapture() {
+    if (!this.captureOwned) return;
+    await this.api('/api/sessions/' + this.session.id + '/capture', { method: 'DELETE', data: { captureId: this.captureId } });
+    this.captureOwned = false;
   }
 
   stop() {
@@ -194,11 +212,12 @@ export class CaptionRuntime {
 
   finishCapture() {
     if (this.drainPromise) return this.drainPromise;
-    if (!this.session || this.session.version !== 2 || this.destroyed) return Promise.resolve();
+    if (!this.session || this.destroyed) return Promise.resolve();
     this.drainPromise = (async () => {
       await this.audio.drain();
       this.receive(await this.api('/api/sessions/' + this.session.id + '/flush', { data: {} }));
       await this.waitForDrain();
+      await this.releaseCapture();
     })().catch(e => this.setError(e.message)).finally(() => {
       this.drainPromise = null; this.emit(); this.maybeResume();
     });
@@ -218,10 +237,14 @@ export class CaptionRuntime {
     const resume = !this.userStopped;
     this.busy = true; this.error = null; this.errorKind = null; this.state = 'stopped'; this.emit();
     try {
-      if (this.session?.translationErrors || (this.session?.version === 2 && this.session.error)) this.receive(await this.api('/api/sessions/' + this.session.id + '/retry-translations', { data: {} }));
-      if (this.session?.version === 2) await this.waitForDrain();
+      if (this.settings.captureProtocol && this.audio.queue.length) {
+        await this.api('/api/sessions/' + this.session.id + '/capture', { data: { captureId: this.captureId } });
+        this.captureOwned = true;
+      }
+      if (this.session.translationErrors || this.session.error) this.receive(await this.api('/api/sessions/' + this.session.id + '/retry-translations', { data: {} }));
+      await this.waitForDrain();
       await this.audio.retry();
-      if (this.session?.version === 2) await this.finishCapture();
+      await this.finishCapture();
     } catch (e) { this.setError(e.message); }
     finally { this.busy = false; this.emit(); }
     if (resume && !this.error) { this.resumeAfterDrain = true; this.maybeResume(); }

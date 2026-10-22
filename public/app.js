@@ -12,7 +12,7 @@ async function api(url, { method, data, body } = {}) {
       body: data !== undefined ? JSON.stringify(data) : body, signal: AbortSignal.timeout(50000) });
   } catch (e) { throw new Error(e.name === 'TimeoutError' ? '本地服务响应超时，请稍后重试。' : '无法连接本地服务，请确认服务正在运行。', { cause: e }); }
   const value = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(value.error || '请求失败，请重试。');
+  if (!response.ok) throw Object.assign(new Error(value.error || '请求失败，请重试。'), { status: response.status, code: value.code });
   return value;
 }
 const terminal = session => ['ended', 'interrupted'].includes(session?.status);
@@ -26,6 +26,7 @@ const list = new Map(), deletedMeetings = new Set();
 let snapshot, initialized = false, generation = 0, route = { type: 'new' }, listNext = null, listLoading = false;
 let listSignature = '', listStatus = '', lastCaptionSignature = '', renderedSession = null, shareSignature = '';
 let historyTranscript, historyItem, deleteTarget, meetingCreating = false, meetingDeleting = false;
+let preferredLanguageKey = '', languageSync = Promise.resolve();
 const runtime = new CaptionRuntime({ api, capture: openMicrophone, onLevel: (level, samples) => meter.update(level, samples), onChange: render,
   onSettings: () => navigate('settings'),
   subscribe(id, receive, connection) {
@@ -49,6 +50,19 @@ function setLanguage(key) {
   language = key; transcript.setLanguage(key); historyTranscript?.setLanguage(key);
   for (const nav of [$('caption-languages'), $('history-languages')]) for (const button of nav.children) button.setAttribute('aria-pressed', String(button.dataset.language === key));
   try { localStorage.setItem('caption-language', key); } catch {}
+  syncLanguage(runtime.session);
+}
+function syncLanguage(session) {
+  if (!session || terminal(session) || session.status === 'finalizing') return;
+  const key = session.id + ':' + language, selected = language;
+  if (key === preferredLanguageKey) return;
+  preferredLanguageKey = key;
+  // Serialize rapid clicks and coalesce unsent selections; an older request
+  // cannot arrive after and undo the host's latest preference.
+  languageSync = languageSync.then(() => {
+    if (preferredLanguageKey !== key) return;
+    return api('/api/sessions/' + session.id + '/preferred-language', { data: { language: selected } });
+  }).catch(() => { if (preferredLanguageKey === key) preferredLanguageKey = ''; });
 }
 for (const nav of [$('caption-languages'), $('history-languages')]) for (const button of nav.children) button.onclick = () => setLanguage(button.dataset.language);
 setLanguage(language);
@@ -63,6 +77,7 @@ function render(value) {
 }
 function renderLive(value) {
   const session = value.session;
+  if (route.type === 'live') syncLanguage(session);
   $('meeting-title').textContent = session?.title || '未命名会议';
   if (session) document.querySelector('.captions').dataset.session = session.id;
   if (renderedSession !== session?.id) { renderedSession = session?.id; lastCaptionSignature = ''; transcript.clear(); }

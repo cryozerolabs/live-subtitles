@@ -62,7 +62,7 @@ function parseJson(text) {
   return JSON.parse(s);
 }
 
-export async function chat(settings, system, user, transport = fetch, { signal, maxTokens = 1024, stream = true, onCue } = {}) {
+export async function chat(settings, system, user, transport = fetch, { signal, maxTokens = 1024, stream = true, onCue, onCueField } = {}) {
   if (!settings.baseURL || !settings.model) throw new Error('请先配置翻译服务。');
   const payload = { model: settings.model, messages: [{ role: 'system', content: system }, { role: 'user', content: user }], response_format: { type: 'json_object' }, max_completion_tokens: maxTokens, temperature: 0, stream };
   const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(45000)]) : AbortSignal.timeout(45000);
@@ -82,7 +82,7 @@ export async function chat(settings, system, user, transport = fetch, { signal, 
     r = await call();
   }
   if (!r.ok) throw providerError('翻译服务', r.status);
-  const j = await readChatResponse(r, { signal: requestSignal, onContent: onCue ? cueReader(onCue) : undefined });
+  const j = await readChatResponse(r, { signal: requestSignal, onContent: onCue || onCueField ? cueReader(onCue, onCueField) : undefined });
   const choice = j?.choices?.[0];
   checkChoice(choice);
   try {
@@ -92,12 +92,15 @@ export async function chat(settings, system, user, transport = fetch, { signal, 
   } catch { throw translationFailure('format', '翻译服务返回格式异常，原文已保留，请重试。'); }
 }
 
-export async function translations(raw, settings, transport = fetch, context = [], { partial = false, fragments, signal, stream = true, onProgress } = {}) {
+export async function translations(raw, settings, transport = fetch, context = [], { partial = false, fragments, signal, stream = true, onProgress, priorityLanguage = 'zhHans' } = {}) {
   const units = splitCueText(raw);
+  const languages = ['zhHans', 'en', 'yue'];
+  const ordered = languages.includes(priorityLanguage) ? [priorityLanguage, ...languages.filter(key => key !== priorityLanguage)] : languages;
+  const schema = { cues: [{ id: 1, source: '该 id 的原文', ...Object.fromEntries(ordered.map(key => [key, { zhHans: '中文译文', en: 'English translation', yue: '粵語口語譯文' }[key]])) }], complete: true };
   const system = [
     '你是实时同声字幕翻译员。输入 cues 是已按原文顺序编号的短字幕，utterance 为完整上下文。',
-    '只返回 JSON：{"cues":[{"id":1,"source":"该 id 的原文","zhHans":"中文译文","en":"English translation","yue":"粵語口語譯文"}],"complete":true}。',
-    '按 id 从小到大输出 cues，每条完成所有字段后再写下一条。source 原样复制该 id 的输入 source；译文只覆盖这一条，不能提前翻译其他条目的后文。',
+    '只返回 JSON：' + JSON.stringify(schema) + '。',
+    `按 id 从小到大输出 cues，每条先写 id、source，再依次写 ${ordered.join('、')}，完成后再写下一条。source 原样复制该 id 的输入 source；译文只覆盖这一条，不能提前翻译其他条目的后文。`,
     '必须逐条返回全部且仅有输入的 id，每个 id 恰好一次；每条三个语言字段均非空。每条只翻译其 source，绝不把相邻条目的内容移动或重复到这一条。利用整个 utterance、fragments 和 context 理解被切开的句子，context 不得重复输出。',
     '无论 source 是普通话、英语还是粤语，每条三个语言都必须翻译。英文整句必须译成中文和粤语，不能把英语照抄进 zhHans 或 yue；只有专名可以保留。例 source: The budget is still pending approval.，zhHans: 预算仍待批准。，en: The budget is still pending approval.，yue: 預算仲未批。',
     '断句例：星期五先交示范版正式上线要等客户验收日期未定，表示星期五只交示范版，正式上线须等验收且日期未定。不得译成星期五正式上线。可在同一短条目的译文内补足标点以明确关系。',
@@ -111,18 +114,30 @@ export async function translations(raw, settings, transport = fetch, context = [
   ].join('\n');
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const rows = new Map(); let published = 0;
+      const rows = new Map(), closed = new Set(); let signature = '';
+      const publish = row => {
+        rows.set(row.id, row);
+        const missing = units.findIndex(unit => !rows.has(unit.id));
+        const prefix = units.slice(0, missing < 0 ? units.length : missing);
+        if (!prefix.length) return;
+        const out = parseCueTranslations({ cues: prefix.map(unit => rows.get(unit.id)), complete: false }, prefix, { partial: true });
+        const next = JSON.stringify(out);
+        if (next !== signature) { signature = next; onProgress(out); }
+      };
       const value = await chat(settings, system + (attempt ? '\n上一轮格式或分条对齐有误。重新逐条核对 id、source 与译文；数字只能留在对应原文的条目中，不得复制相邻条目的译文。返回全部输入 id 与 complete，只输出完整 JSON。' : ''),
         JSON.stringify({ context: attempt ? [] : context.slice(-2), utterance: raw, fragments: fragments || [raw], cues: units.map(unit => ({ id: unit.id, source: unit.raw })) }), transport, { signal, stream, maxTokens: 4096,
           onCue: onProgress ? row => {
             validateRow(row, units);
-            if (rows.has(row.id)) failAlignment();
-            rows.set(row.id, row);
-            const missing = units.findIndex(unit => !rows.has(unit.id));
-            const prefix = units.slice(0, missing < 0 ? units.length : missing);
-            if (prefix.length <= published) return;
-            const out = parseCueTranslations({ cues: prefix.map(unit => rows.get(unit.id)), complete: false }, prefix);
-            published = prefix.length; onProgress(out);
+            if (closed.has(row.id)) failAlignment();
+            closed.add(row.id); publish(row);
+          } : undefined,
+          onCueField: onProgress ? row => {
+            // A closed source echo anchors an early language to its input.
+            // Responses without source echoes wait for the complete row instead.
+            if (row.id === undefined || row.source === undefined) return;
+            validateRow(row, units, { partial: true });
+            if (closed.has(row.id)) failAlignment();
+            if (languages.some(key => row[key] !== undefined)) publish(row);
           } : undefined,
         });
       return parseCueTranslations(value, units);
@@ -138,13 +153,13 @@ const sourceKey = text => String(text).normalize('NFKC').replace(/\s+/gu, ' ').t
 const numberKeys = text => [...sourceKey(text).matchAll(/\d+(?:[ ,\u00a0\u202f]\d{3})*(?:\.\d+)?/g)].map(match => String(Number(match[0].replace(/[ ,\u00a0\u202f]/g, ''))));
 const spelledNumbers = text => /\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand|million|billion)\b|[零〇一二两兩三四五六七八九十百千万萬亿億]/iu.test(text);
 function failAlignment() { throw translationFailure('format', '翻译服务未返回按编号对齐的完整字幕，原文已保留。'); }
-function validateRow(row, units) {
+function validateRow(row, units, { partial = false } = {}) {
   const unit = units.find(unit => unit.id === row?.id);
   if (!unit) failAlignment();
   if (row.source !== undefined && (typeof row.source !== 'string' || sourceKey(row.source) !== sourceKey(unit.raw))) failAlignment();
-  for (const key of ['zhHans', 'en', 'yue']) if (typeof row[key] !== 'string' || !row[key].trim()) failAlignment();
+  for (const key of ['zhHans', 'en', 'yue']) if ((!partial || row[key] !== undefined) && (typeof row[key] !== 'string' || !row[key].trim())) failAlignment();
   const englishSentence = (unit.raw.match(/[A-Za-z]+/g) || []).length >= 4 && /\b(is|are|was|were|will|has|have|not|only|if|we|the)\b/i.test(unit.raw);
-  if (englishSentence && ['zhHans', 'yue'].some(key => !/\p{Script=Han}/u.test(row[key]))) failAlignment();
+  if (englishSentence && ['zhHans', 'yue'].some(key => (!partial || row[key] !== undefined) && !/\p{Script=Han}/u.test(row[key]))) failAlignment();
   // Catch an explicit amount moved from another cue. Spelled-out numbers are
   // left to the model rather than guessing number words or currency conversions.
   if (!spelledNumbers(unit.raw)) {
@@ -153,14 +168,14 @@ function validateRow(row, units) {
   }
 }
 
-function parseCueTranslations(value, units) {
+function parseCueTranslations(value, units, { partial = false } = {}) {
   if (typeof value.complete !== 'boolean') failAlignment();
-  // A single cue can use a provider's legacy flat shape without losing alignment.
+  // A flat response remains unambiguous when there is exactly one source cue.
   const output = Array.isArray(value.cues) ? value.cues : units.length === 1 ? [{ ...value, id: units[0].id }] : [];
   if (output.length !== units.length) failAlignment();
   const ids = new Set();
   for (const row of output) {
-    validateRow(row, units);
+    validateRow(row, units, { partial });
     if (ids.has(row.id)) failAlignment();
     ids.add(row.id);
   }
@@ -171,8 +186,12 @@ function parseCueTranslations(value, units) {
   }
   const cues = units.map(unit => {
     const row = output.find(c => c.id === unit.id);
-    return { ...unit, translations: { zhHans: toSimplified(row.zhHans.trim()), en: row.en.trim(), yue: traditional(row.yue.trim()) } };
+    const translations = {};
+    if (row.zhHans !== undefined) translations.zhHans = toSimplified(row.zhHans.trim());
+    if (row.en !== undefined) translations.en = row.en.trim();
+    if (row.yue !== undefined) translations.yue = traditional(row.yue.trim());
+    return { ...unit, translations };
   });
-  const zhHans = cues.map(c => c.translations.zhHans).join('');
-  return { zhHans, zhHant: toTraditional(zhHans), en: cues.map(c => c.translations.en).join(' '), yue: cues.map(c => c.translations.yue).join(''), complete: value.complete, cues, kind: 'model' };
+  const zhHans = cues.map(c => c.translations.zhHans || '').join('');
+  return { zhHans, zhHant: toTraditional(zhHans), en: cues.map(c => c.translations.en || '').join(' '), yue: cues.map(c => c.translations.yue || '').join(''), complete: value.complete, cues, kind: 'model' };
 }

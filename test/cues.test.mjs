@@ -8,7 +8,7 @@ import { SubtitleStore, serializeSrt, srtTime, subtitleFiles } from '../src/stor
 import { translations } from '../src/providers/openai-compatible.js';
 import { SentenceBuffer, sentenceCut } from '../src/captions/sentences.js';
 import { ModelLane } from '../src/captions/model-lane.js';
-import { createApp } from '../src/server.js';
+import { createApp } from './helpers/service.mjs';
 
 const settings = { baseURL: 'http://model/v1', model: 'translator' };
 const json = value => new Response(JSON.stringify(value));
@@ -124,7 +124,7 @@ test('missing, duplicate or invented cue IDs retry once and never pair with the 
   }
 });
 
-test('a one-cue legacy response remains aligned; an unfinished cue stays unfinished', async () => {
+test('a single-cue flat response remains aligned; an unfinished cue stays unfinished', async () => {
   const out = await translations('And we’re', settings, async () => response({ ...languages('And we’re…'), complete: false }), [], { sentence: true, cues: true });
   assert.equal(out.cues[0].raw, 'And we’re'); assert.equal(out.complete, false);
 });
@@ -140,14 +140,17 @@ test('copying an English sentence into Chinese or Cantonese triggers the bounded
   assert.equal(calls, 2); assert.equal(out.cues[0].translations.yue, '預算仲未批。');
 });
 
-test('public cues use the matching translated source revision, with one shared estimated time axis', () => {
+test('source revisions appear immediately and retain translations only on unchanged spans', () => {
   const raw = '预算尚未批准。审批通过后才发布。';
   const parts = splitCueText(raw).map(c => ({ ...c, translations: languages(c.raw) }));
-  const c = { id: 'c1', raw: raw + '后文到了。', revision: 5, translatedRevision: 4, final: false, startMs: 1000, endMs: 5000, translations: { cues: parts } };
+  const c = { id: 'c1', raw: raw + '后文到了。', revision: 5, translatedRevision: 4, displayRevision: 6, final: false, startMs: 1000, endMs: 5000, translations: { cues: parts } };
   const rows = cueRows([c]);
-  assert.equal(rows.length, 2); assert.equal(rows.map(r => r.raw).join(''), raw);
-  assert.ok(rows.every(r => r.revision === 4 && !r.final && r.timing === 'estimated'));
+  assert.equal(rows.length, 3); assert.equal(rows.map(r => r.raw).join(''), c.raw);
+  assert.deepEqual(rows[0].translations, parts[0].translations); assert.deepEqual(rows[2].translations, {});
+  assert.ok(rows.every(r => r.revision === 6 && !r.final && r.timing === 'estimated'));
   assert.equal(rows[0].endMs, rows[1].startMs); assert.equal(rows[0].id, 'c1:1');
+  c.raw = c.raw.replace('尚未批准', '已经批准');
+  assert.deepEqual(cueRows([c])[0].translations, {});
 });
 
 test('long context splits advance the audio start of the next source span', async t => {
@@ -222,7 +225,7 @@ test('HTTP live snapshots and saved SRT contain short paired cues before the mee
   assert.equal((await fetch(base + '/api/sessions/' + s.id + '/subtitles/constructor')).status, 404);
   const share = await api('/api/sessions/' + s.id + '/share'), token = new URL(share.url).pathname.split('/').at(-1);
   const phone = await api('/api/watch/' + token); assert.deepEqual(phone.captions.map(c => c.raw), s.captions.map(c => c.raw));
-  assert.doesNotMatch(JSON.stringify(phone), /apiKey|llmEndpoint|asrEndpoint/);
+  assert.doesNotMatch(JSON.stringify(phone), /apiKey|baseURL/);
   await api('/api/sessions/' + s.id + '/end', {});
   await until(async () => (await api('/api/sessions/' + s.id)).status === 'ended');
   const zip = await fetch(base + '/api/sessions/' + s.id + '/download');

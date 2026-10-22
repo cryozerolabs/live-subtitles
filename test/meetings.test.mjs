@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
-import { createApp } from '../src/server.js';
+import { createApp } from './helpers/service.mjs';
 import { RecordingStore } from '../src/storage/recording-store.js';
 import { CaptionRuntime } from '../public/runtime.js';
 
@@ -167,7 +167,7 @@ test('restart exposes saved audio as interrupted without replaying a provider or
 test('history and downloads contain all captions beyond the live window, with no model replay', async t => {
   const x = await server(t, { transport: async () => { throw new Error('must not call provider'); } });
   const id = crypto.randomUUID(), captions = Array.from({ length: 151 }, (_, n) => ({ id: 'c' + (n + 1), startMs: n * 1000, endMs: (n + 1) * 1000, revision: 2, final: true, raw: '原文' + n, translations: { ...trio, zhHans: '未批准 ' + n } }));
-  fs.writeFileSync(path.join(x.dir, 'sessions', id + '.json'), JSON.stringify({ id, version: 2, mode: 'ming', title: '长会议', createdAt: new Date().toISOString(), status: 'ended', segments: [], captions }));
+  fs.writeFileSync(path.join(x.dir, 'sessions', id + '.json'), JSON.stringify({ id, version: 2, kind: 'meeting', title: '长会议', createdAt: new Date().toISOString(), status: 'ended', segments: [], captions }));
   assert.equal((await x.api('/api/sessions/' + id)).body.captions.length, 60);
   assert.ok((await x.api('/api/sessions')).body.items.some(s => s.id === id));
   const tail = (await x.api('/api/sessions/' + id + '/captions')).body; assert.equal(tail.items.length, 60); assert.equal(tail.hasBefore, true);
@@ -186,14 +186,14 @@ test('phone snapshot, SSE and caption pages include original text but never serv
   const id = crypto.randomUUID(), token = crypto.randomBytes(32).toString('base64url');
   const raw = 'The budget of 150,000 has not been approved.';
   fs.writeFileSync(path.join(x.dir, 'sessions', id + '.json'), JSON.stringify({
-    id, version: 2, mode: 'ming', title: '双语字幕', createdAt: new Date().toISOString(), status: 'ended', watchToken: token,
+    id, version: 2, kind: 'meeting', title: '双语字幕', createdAt: new Date().toISOString(), status: 'ended', watchToken: token,
     segments: [], captions: [{ id: 'c1', revision: 3, final: true, raw, translations: trio, startMs: 0, endMs: 4000 }],
   }));
   const snapshot = (await x.api('/api/watch/' + token)).body;
   const page = (await x.api('/api/watch/' + token + '/captions')).body;
   assert.equal(snapshot.captions[0].raw, raw); assert.equal(page.items[0].raw, raw);
   assert.equal(snapshot.captions[0].translations.yue, trio.yue);
-  assert.doesNotMatch(JSON.stringify(snapshot), /watchToken|apiKey|asrKey|llmKey|Endpoint/);
+  assert.doesNotMatch(JSON.stringify(snapshot), /watchToken|apiKey|baseURL/);
   const controller = new AbortController();
   const response = await fetch(x.base + '/api/watch/' + token + '/events', { signal: controller.signal });
   const reader = response.body.getReader();
@@ -202,16 +202,17 @@ test('phone snapshot, SSE and caption pages include original text but never serv
   assert.equal(JSON.parse(event.slice(event.indexOf('data:') + 5).trim()).captions[0].raw, raw);
 });
 
-test('legacy sample sessions cannot break the saved meeting list and remain untouched', async t => {
+test('records outside the meeting schema are excluded without modifying their files', async t => {
   const x = await server(t, { transport: async () => { throw new Error('listing must not replay models'); } });
   const id = crypto.randomUUID(), sampleId = crypto.randomUUID();
-  fs.writeFileSync(path.join(x.dir, 'sessions', id + '.json'), JSON.stringify({ id, mode: 'ming', status: 'ended', title: '已保存会议', createdAt: new Date().toISOString(), startedAt: new Date().toISOString(), segments: [] }));
+  fs.writeFileSync(path.join(x.dir, 'sessions', id + '.json'), JSON.stringify({ id, kind: 'meeting', version: 2, status: 'ended', title: '已保存会议', createdAt: new Date().toISOString(), startedAt: new Date().toISOString(), segments: [], captions: [] }));
   const file = path.join(x.dir, 'sessions', sampleId + '.json');
-  const legacy = JSON.stringify({ id: sampleId, mode: 'sample', segments: [{ raw: 'old preview' }] });
-  fs.writeFileSync(file, legacy);
+  const invalid = JSON.stringify({ id: sampleId, kind: 'meeting', version: 0, segments: [] });
+  fs.writeFileSync(file, invalid);
   const page = await x.api('/api/sessions');
   assert.equal(page.status, 200); assert.deepEqual(page.body.items.map(s => s.id), [id]);
-  assert.equal(fs.readFileSync(file, 'utf8'), legacy);
+  assert.equal(fs.readFileSync(file, 'utf8'), invalid);
+  assert.equal((await x.api('/api/sessions/' + sampleId)).status, 404);
 });
 
 test('LAN viewers have only token-scoped read access even with a forged localhost Host', async t => {
@@ -225,6 +226,7 @@ test('LAN viewers have only token-scoped read access even with a forged localhos
     assert.equal((await fetch(lan + route, { headers: { host: 'localhost:' + x.listener.address().port } })).status, 403, route);
   }
   assert.equal((await fetch(lan + '/api/sessions/' + draft.id + '/end', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 403);
+  assert.equal((await fetch(lan + '/api/sessions/' + draft.id + '/preferred-language', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"language":"yue"}' })).status, 403);
   assert.equal((await fetch(lan + '/api/watch/' + 'a'.repeat(43))).status, 404);
   const publicBody = await (await fetch(lan + '/api/watch/' + token)).json();
   assert.equal(publicBody.segments, undefined); assert.equal(publicBody.settings, undefined); assert.equal(publicBody.recording, undefined);
@@ -258,10 +260,11 @@ test('runtime end releases capture immediately but waits for queued audio; next 
 
 test('ending during backpressure drain does not deadlock and never resumes the microphone', async () => {
   let receive, starts = 0;
-  let session = { id: 'x', version: 2, status: 'recording', update: 0, captions: [], segments: [] };
+  let session = { id: 'x', version: 2, status: 'ready', update: 0, captions: [], segments: [] };
   const runtime = new CaptionRuntime({
     api: async url => {
       if (url === '/api/settings') return { configured: true };
+      if (url.endsWith('/start')) session = { ...session, status: 'recording' };
       if (url.endsWith('/flush')) return { ...session, update: 2, draining: true };
       if (url.endsWith('/end')) session = { ...session, update: 4, status: 'ended' };
       return { ...session };

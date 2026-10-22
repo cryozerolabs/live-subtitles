@@ -68,6 +68,10 @@ export class CaptionAudio {
 
   flush() {
     if (!this.frames.length) return;
+    // The upload protocol accepts complete 100ms frames. Keep every sample from
+    // the worklet's shorter stop tail, padding only its final frame with silence.
+    const bytes = this.frames.reduce((n, frame) => n + frame.byteLength, 0), padding = (3200 - bytes % 3200) % 3200;
+    if (padding) { this.frames.push(new ArrayBuffer(padding)); this.timeMs += padding / 32; }
     this.queue.push({ body: new Blob(this.frames, { type: 'application/octet-stream' }), startMs: Math.round(this.frameStart), chunkId: this.chunkId(), capturedAt: (this.wallStart || Date.now()) + this.frameStart });
     this.frames = [];
     if (this.recording && this.queue.reduce((n, c) => n + c.body.size / 32, 0) >= 12000) this.pause('音频上传较慢，正在处理已录音频。', 'backpressure');

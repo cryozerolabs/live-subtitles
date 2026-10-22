@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
-import { createApp } from '../src/server.js';
+import { createApp } from './helpers/service.mjs';
 import { endpoint, recognize, translations, wavFile } from '../src/providers/openai-compatible.js';
 import { CaptionAudio } from '../public/audio.js';
 import { CaptionRuntime } from '../public/runtime.js';
