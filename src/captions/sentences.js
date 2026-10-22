@@ -1,7 +1,6 @@
-import { sourceTime } from './cue-text.js';
+import { sourceTime, wordCuts } from './cue-text.js';
 // Each source revision replaces one utterance in the current sentence. All
 // translated languages share that sentence's ID, revision and finalization state.
-const words = new Intl.Segmenter(undefined, { granularity: 'word' });
 const points = text => [...text].length;
 const skippable = e => ['refusal', 'format'].includes(e.kind);
 
@@ -25,11 +24,12 @@ export function composeSources(entries) {
 export function sentenceCut(text) {
   const window = [...text].slice(0, 200).join('');
   const min = [...text].slice(0, 60).join('').length;
+  const boundaries = wordCuts(text), allowed = new Set(boundaries);
   let cut = -1;
-  for (const match of window.matchAll(/[。！？!?；;，,]|\.(?=\s|$)/gu)) if (match.index >= min) cut = match.index + match[0].length;
+  for (const match of window.matchAll(/[。！？!?；;，,]|\.(?=\s|$)/gu)) if (match.index >= min && allowed.has(match.index + match[0].length)) cut = match.index + match[0].length;
   if (cut > 0) return cut;
-  for (const unit of words.segment(window)) if (unit.index >= min) cut = unit.index;
-  return cut > 0 ? cut : window.length;
+  for (const end of boundaries) if (end >= min && end <= window.length) cut = end;
+  return cut > 0 ? cut : boundaries.find(end => end >= window.length) || text.length;
 }
 
 export class SentenceBuffer {
@@ -38,9 +38,10 @@ export class SentenceBuffer {
     Object.assign(this, { captions, lane, translate, onChange, onError, asrPending, speaking, now, partialMs, idleMs });
     this.entries = []; this.current = null; this.seq = captions.reduce((n, c) => Math.max(n, Number(c.id.slice(1)) || 0), 0);
     this.suppressed = new Set(); this.consumed = new Set(); this.jobs = new Set(); this.finalJobs = new Set();
+    this.requests = new Map();
     this.lastVoiceAt = 0; this.lastPartialAt = -Infinity; this.attempted = ''; this.closed = false;
-    this.timer = null; this.idleTimer = null;
-    this.metrics = { requests: 0, partials: 0, finals: 0, stale: 0, skipped: 0 };
+    this.timer = null; this.idleTimer = null; this.requestSeq = 0;
+    this.metrics = { requests: 0, partials: 0, finals: 0, stale: 0, skipped: 0, streamUpdates: 0 };
   }
 
   get pendingFinals() { return this.finalJobs.size; }
@@ -144,35 +145,61 @@ export class SentenceBuffer {
       return e ? e.raw.slice(s.start, s.end) : raw;
     });
     const prior = () => this.captions.filter(p => p !== c && p.final && !p.skipped && p.translations).slice(-2).map(p => p.raw);
+    const requestId = ++this.requestSeq, translatedSource = { raw, startMs: c.startMs, endMs: c.endMs };
+    let settled = false;
     const promise = this.lane.run(signal => {
-      if (this.closed || c.skipped || (!sealed && (this.current !== c || c.revision !== revision))) return null;
+      if (this.closed || c.skipped || c.revision !== revision || (!sealed && !c.sealed && this.current !== c)) return null;
       this.metrics.requests++; this.metrics[priority ? 'finals' : 'partials']++;
-      return this.translate(raw, prior(), { signal, partial: !priority, fragments });
+      return this.translate(raw, prior(), { signal, partial: !priority, fragments, onProgress: out => {
+        if (settled || signal.aborted || this.closed || c.skipped || c.final || c.revision !== revision || (!sealed && !c.sealed && this.current !== c)) return;
+        if (!out) { this.discardProvisional(c, requestId); return; }
+        c.provisional = { ...translatedSource, translations: out, revision, requestId };
+        c.firstReadyAt ||= this.now(); this.metrics.streamUpdates++;
+        this.advanceDisplay(c); this.onChange();
+      } });
     }, { final: priority, owner: this });
     if (!promise) return false;
     this.jobs.add(promise); if (priority) this.finalJobs.add(promise);
+    this.requests.set(promise, { caption: c, revision, priority });
     promise.then(out => {
+      settled = true;
       if (!out || this.closed || c.skipped) return;
-      if (c.final || c.revision !== revision || (!sealed && this.current !== c)) { this.metrics.stale++; return; }
+      if (c.final || c.revision !== revision || (!sealed && !c.sealed && this.current !== c)) { this.metrics.stale++; return; }
       c.translations = out; c.complete = out.complete; c.translatedRevision = revision;
+      c.translatedSource = translatedSource; delete c.provisional; this.advanceDisplay(c);
       c.firstReadyAt ||= this.now(); c.readyAt = this.now(); delete c.translationError; delete c.translationErrorKind;
-      if (sealed) { c.final = true; c.finalReadyAt = this.now(); }
+      if (sealed || c.sealed) { c.final = true; c.finalReadyAt = this.now(); }
       else if (out.complete && this.naturalEnd()) this.finish(c);
       this.onChange();
     }).catch(e => {
+      settled = true; this.discardProvisional(c, requestId);
       if (this.closed || e.name === 'AbortError') return;
       if (skippable(e)) this.skip(c, e);
       else if (priority) { c.translationError = e.message; c.translationErrorKind = e.kind || 'processing'; this.onError(e); }
     }).finally(() => {
+      settled = true; this.discardProvisional(c, requestId);
       this.jobs.delete(promise); this.finalJobs.delete(promise);
+      this.requests.delete(promise);
       if (!this.closed) { this.schedule(this.naturalEnd()); this.armIdle(); this.onChange(); }
     });
     return true;
   }
 
+  advanceDisplay(c) {
+    // ASR revisions and stream attempts are different clocks. Rollback must also
+    // advance the display clock so browser/phone clients can remove a bad tail.
+    c.displayRevision = Math.max(c.displayRevision || 0, c.revision || 0, c.translatedRevision || 0) + 1;
+  }
+
+  discardProvisional(c, requestId) {
+    if (c.provisional?.requestId !== requestId) return;
+    delete c.provisional; this.advanceDisplay(c); this.onChange();
+  }
+
   finish(c) {
     if (this.current !== c || c.final) return;
     clearTimeout(this.timer); clearTimeout(this.idleTimer);
+    if (c.provisional) { delete c.provisional; this.advanceDisplay(c); }
     c.final = true; c.finalReadyAt = this.now(); this.consume(c.raw.length); this.current = null; this.attempted = '';
     this.onChange();
   }
@@ -180,6 +207,18 @@ export class SentenceBuffer {
   seal(cut, reason) {
     const c = this.current; if (!c) return;
     clearTimeout(this.timer); clearTimeout(this.idleTimer);
+    if (cut === c.raw.length) {
+      // Stop/idle can arrive while an identical final stream is still open.
+      // Drain that request instead of translating the same sentence twice.
+      const pendingFinal = [...this.requests.values()].some(task => task.caption === c && task.revision === c.revision && task.priority);
+      if (pendingFinal) {
+        c.fragments = (c.sources || []).map(s => this.entries.find(e => e.id === s.id)?.raw.slice(s.start, s.end) || c.raw);
+        c.sealed = true; c.closeReason = reason; this.consume(cut); this.current = null; this.attempted = ''; this.onChange(); return;
+      }
+      if (c.translations && c.translatedRevision === c.revision && !c.translationError) {
+        c.closeReason = reason; this.finish(c); return;
+      }
+    }
     c.raw = c.raw.slice(0, cut); c.sources = this.sources(cut);
     this.updateTimes(c);
     c.fragments = c.sources.map(s => this.entries.find(e => e.id === s.id).raw.slice(s.start, s.end));
@@ -239,5 +278,8 @@ export class SentenceBuffer {
     await this.flush();
   }
 
-  close() { this.closed = true; clearTimeout(this.timer); clearTimeout(this.idleTimer); this.lane.cancel(this); this.entries = []; }
+  close() {
+    this.closed = true; clearTimeout(this.timer); clearTimeout(this.idleTimer); this.lane.cancel(this); this.entries = [];
+    for (const c of this.captions) delete c.provisional;
+  }
 }

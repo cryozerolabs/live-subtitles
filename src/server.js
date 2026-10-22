@@ -1,4 +1,4 @@
-import { cueRows } from './captions/cue-text.js';
+import { cueRows, captionRevision } from './captions/cue-text.js';
 import { SubtitleStore, subtitleFiles } from './storage/subtitle-store.js';
 // Local caption service; provider connections use OpenAI-compatible HTTP shapes.
 import express from 'express';
@@ -42,7 +42,7 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), transport = fetch
     return subtitleStores.get(ctx.data.id);
   };
   const records = ctx => ctx.data.version === 2 ? ctx.data.captions : ctx.data.segments;
-  const captionParents = ctx => records(ctx).slice(-60).map(c => ({ id: c.id, revision: c.translatedRevision ?? c.revision ?? 0, ids: cueRows([c]).map(row => row.id) }));
+  const captionParents = ctx => records(ctx).slice(-60).map(c => ({ id: c.id, revision: captionRevision(c), ids: cueRows([c]).map(row => row.id) }));
   const epoch = crypto.randomUUID();
   const currentFile = path.join(dataDir, 'current.json');
   const addresses = () => [...new Set(Object.values(os.networkInterfaces()).flat().filter(v => v && v.family === 'IPv4' && !v.internal && !v.address.startsWith('169.254.')).map(v => v.address))];
@@ -117,7 +117,11 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), transport = fetch
       }
       // Old sessions are display-only until new audio explicitly arrives. Never replay
       // a saved transcript merely because the browser reconnects after a restart.
-      if (data.version === 2) for (const c of data.captions) if (!c.final) { if (!data.status) c.final = true; c.interrupted = true; }
+      if (data.version === 2) for (const c of data.captions) {
+        // A saved stream overlay was never validated as a complete response.
+        if (c.provisional) { delete c.provisional; c.displayRevision = captionRevision(c) + 1; }
+        if (!c.final) { if (!data.status) c.final = true; c.interrupted = true; }
+      }
       const ctx = context(data); sessions.set(id, ctx);
       if (fs.existsSync(path.join(dataDir, 'recordings', id))) {
         data.recording = recorder(ctx).summary(); data.ingestEndMs = Math.max(data.ingestEndMs || 0, recorder(ctx).endMs);

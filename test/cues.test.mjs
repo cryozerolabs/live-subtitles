@@ -6,7 +6,7 @@ import path from 'node:path';
 import { splitCueText, cueRows } from '../src/captions/cue-text.js';
 import { SubtitleStore, serializeSrt, srtTime, subtitleFiles } from '../src/storage/subtitle-store.js';
 import { translations } from '../src/providers/openai-compatible.js';
-import { SentenceBuffer } from '../src/captions/sentences.js';
+import { SentenceBuffer, sentenceCut } from '../src/captions/sentences.js';
 import { ModelLane } from '../src/captions/model-lane.js';
 import { createApp } from '../src/server.js';
 
@@ -32,6 +32,71 @@ test('short source cues preserve every character, Unicode, decimal numbers and w
   }
   const amounts = splitCueText('Budget 150,000.50 is still pending approval. '.repeat(5));
   assert.equal(amounts.filter(c => c.raw.includes('150,000.50')).length, 5);
+});
+
+test('lowercase ASR sentences keep their meaning and spaced thousands stay in one cue', () => {
+  const raw = 'we will deliver only the demo on friday. the launch must wait for customer exceptions and the date is not confirmed. the budget is $12 500 and has not been approved.';
+  const cues = splitCueText(raw);
+  assert.deepEqual(cues.map(c => c.raw.trim()), [
+    'we will deliver only the demo on friday.',
+    'the launch must wait for customer exceptions and the date is not confirmed.',
+    'the budget is $12 500 and has not been approved.',
+  ]);
+  assert.equal(cues.map(c => c.raw).join(''), raw);
+  for (const amount of ['HK$12 500.50', '€12\u202f500.50', '$150,000.50', '￥１２５００', '10:30', '2026-10-22']) {
+    const sentence = `the revised budget is ${amount} and still needs acceptance.`;
+    for (const limit of [5, 10, 18, 26]) {
+      const parts = splitCueText(sentence, { limit });
+      assert.equal(parts.map(c => c.raw).join(''), sentence);
+      assert.equal(parts.filter(c => c.raw.includes(amount)).length, 1, `${amount}, width ${limit}`);
+    }
+  }
+});
+
+test('long sentence fallback cannot split the grouping comma in a currency amount', () => {
+  const raw = 'keep the source characters and offsets stable while the meeting continues and the pending budget is HK$12,500 and its approval is still required before the official launch can happen at the confirmed date. '.repeat(2);
+  const cut = sentenceCut(raw), amountStart = raw.indexOf('HK$12,500');
+  assert.ok(cut <= amountStart || cut >= amountStart + 'HK$12,500'.length);
+  assert.equal(raw.slice(0, cut) + raw.slice(cut), raw);
+});
+
+test('lowercase fallback does not turn English abbreviations or decimals into separate sentences', () => {
+  const raw = 'dr. smith is in the U.S. office. the budget is $12 500.50. do not launch yet.';
+  const cues = splitCueText(raw);
+  assert.equal(cues.map(c => c.raw).join(''), raw);
+  assert.ok(cues[0].raw.includes('dr. smith') && cues[0].raw.includes('U.S. office.'));
+  assert.ok(cues.some(c => c.raw.trim() === 'the budget is $12 500.50.'));
+});
+
+test('amounts copied from another English cue are rejected and corrected by the single format retry', async () => {
+  const raw = 'the launch needs acceptance. the budget is $12 500 and has not been approved.';
+  let calls = 0;
+  const out = await translations(raw, settings, async (_url, options) => {
+    const input = JSON.parse(JSON.parse(options.body).messages[1].content);
+    calls++;
+    return response({ complete: true, cues: input.cues.map(c => ({ id: c.id, source: c.source,
+      zhHans: calls === 1 || c.id === 2 ? '预算为12500元，尚未批准。' : '上线须等待验收。',
+      en: calls === 1 || c.id === 2 ? 'The budget is $12,500 and has not been approved.' : 'The launch needs acceptance.',
+      yue: calls === 1 || c.id === 2 ? '預算係12500元，仲未批。' : '推出要等驗收先得。',
+    })) });
+  });
+  assert.equal(calls, 2); assert.equal(out.cues.length, 2);
+  assert.doesNotMatch(out.cues[0].translations.en, /12/);
+  assert.equal(out.cues.filter(c => /12,500/.test(c.translations.en)).length, 1);
+});
+
+test('source echoes must match their ID and repeated speech is not deduplicated', async () => {
+  let calls = 0;
+  await assert.rejects(translations('launch after acceptance. budget is $12 500.', settings, async (_url, options) => {
+    calls++; const input = JSON.parse(JSON.parse(options.body).messages[1].content);
+    return response({ complete: true, cues: input.cues.map(c => ({ id: c.id, source: 'a different sentence', zhHans: '原文被调换。', en: 'Different.', yue: '原文調轉咗。' })) });
+  }), e => e.kind === 'format');
+  assert.equal(calls, 2);
+  const repeated = await translations('the budget is $12 500. the budget is $12 500.', settings, async (_url, options) => {
+    const input = JSON.parse(JSON.parse(options.body).messages[1].content);
+    return response({ complete: true, cues: input.cues.map(c => ({ id: c.id, source: c.source, zhHans: '预算为12500元。', en: 'The budget is $12,500.', yue: '預算係12500元。' })) });
+  });
+  assert.equal(repeated.cues.length, 2);
 });
 
 test('one translation request aligns all cue languages by ID even if provider reorders its answer', async () => {
