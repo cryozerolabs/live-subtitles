@@ -1,5 +1,7 @@
 # Live Subtitles
 
+**简体中文** · [English](README.en.md) · [繁體中文（香港）](README.zh-HK.md)
+
 **一台电脑开启同声字幕，观众扫码选择自己的语言。**
 
 A CryoZeroLabs project · [Follow @cryozerolabs on X](https://x.com/cryozerolabs)
