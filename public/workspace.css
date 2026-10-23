@@ -166,7 +166,7 @@
 
 .new-panel {
   display: flex;
-  align-items: center;
+  align-items: safe center;
   justify-content: center;
   overflow: auto;
 }
@@ -204,6 +204,10 @@
   padding: 12px 15px;
   font-size: 16px;
   background: #18171c;
+}
+
+.new-meeting-form label[for="new-description"] {
+  margin-top: 20px;
 }
 
 .new-meeting-help {
@@ -265,7 +269,7 @@
   font-size: 14px;
 }
 
-.settings-content textarea {
+.new-meeting-form textarea {
   width: 100%;
   min-height: 112px;
   padding: 12px 14px;

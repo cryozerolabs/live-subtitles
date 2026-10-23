@@ -30,14 +30,14 @@ test('unconfigured settings have no provider, model or credentials by default', 
   const store = new SettingsStore(directory(t), {});
   assert.deepEqual(store.value, {
     version: 2,
-    asr: { baseURL: '', apiKey: '', model: '', prompt: '' },
+    asr: { baseURL: '', apiKey: '', model: '' },
     translation: { baseURL: '', apiKey: '', model: '', useAsrConnection: false },
     networkAddress: '',
   });
   assert.equal(settingsReady(store.value), false);
   assert.equal(fs.existsSync(store.file), false);
   assert.deepEqual(publicSettings(store.value), {
-    asr: { baseURL: '', model: '', hasApiKey: false, prompt: '' },
+    asr: { baseURL: '', model: '', hasApiKey: false },
     translation: { baseURL: '', model: '', hasApiKey: false, useAsrConnection: false },
     networkAddress: '', configured: false,
   });
@@ -57,36 +57,6 @@ test('protocol-neutral environment groups are independent and saved settings ove
   assert.deepEqual(reopened.value, next);
   assert.equal(fs.statSync(store.file).mode & 0o777, 0o600);
   assert.equal(fs.existsSync(store.file + '.tmp'), false);
-});
-
-test('global ASR context persists, stays separate from connection reuse and can be cleared', t => {
-  const dir = directory(t), initial = '本次介绍 Claude Code 与 MCP。';
-  const store = new SettingsStore(dir, { ...env, ASR_PROMPT: initial });
-  assert.equal(connection(store.value, 'asr').prompt, initial);
-  assert.equal(publicSettings(store.value).asr.prompt, initial);
-  const prompt = '  分享主题：Claude Code 与 Codex。\n术语：MCP、Cloud Code。  ';
-  store.write(updateSettings(store.value, { asr: { prompt }, translation: { useAsrConnection: true } }));
-  const reopened = new SettingsStore(dir, { ...env, ASR_PROMPT: '环境变量不会覆盖已保存内容' });
-  assert.equal(reopened.value.asr.prompt, prompt.trim());
-  assert.equal(reopened.value.asr.apiKey, ASR_KEY);
-  assert.equal(reopened.value.asr.model, env.ASR_MODEL);
-  assert.equal(Object.hasOwn(connection(reopened.value, 'translation'), 'prompt'), false);
-  const retained = updateSettings(reopened.value, { asr: { model: 'renamed-speech' } });
-  assert.equal(retained.asr.prompt, prompt.trim());
-  const cleared = updateSettings(retained, { asr: { prompt: '   ' } });
-  store.write(cleared);
-  assert.equal(new SettingsStore(dir, env).value.asr.prompt, '');
-  assert.equal(Object.hasOwn(connection(cleared, 'asr'), 'prompt'), false);
-});
-
-test('global context accepts more than 60 characters and rejects oversized or non-text input without echo', t => {
-  const previous = fixture(t).value;
-  for (const length of [300, 4000]) assert.equal(updateSettings(previous, { asr: { prompt: '术'.repeat(length) } }).asr.prompt.length, length);
-  for (const prompt of ['private-context'.repeat(400), { context: 'private-context' }, null]) {
-    rejectsWithoutEcho(() => updateSettings(previous, { asr: { prompt } }), ['private-context']);
-  }
-  assert.equal(previous.asr.prompt, '');
-  rejectsWithoutEcho(() => updateSettings(previous, { translation: { prompt: 'private-context' } }), ['private-context']);
 });
 
 test('same-origin new environment groups do not implicitly copy the recognition key', t => {

@@ -25,11 +25,13 @@ async function service(t) {
 test('named meetings are listed before capture; saving service settings preserves their title', async t => {
   const s = await service(t);
   assert.equal((await s.api('/api/sessions')).body.items.length, 0);
-  const created = await s.api('/api/sessions', { version: 2, draft: true, title: '  产品评审  ' });
+  const created = await s.api('/api/sessions', { version: 2, draft: true, title: '  产品评审  ', description: '  讨论 Claude Code 与 MCP 的应用。  ' });
   assert.equal(created.status, 201); assert.equal(created.body.title, '产品评审'); assert.equal(created.body.status, 'ready');
+  assert.equal(created.body.description, '讨论 Claude Code 与 MCP 的应用。');
   assert.equal(created.body.createdByUser, true); assert.equal(created.body.startedAt, undefined); assert.equal(created.body.recording.available, false);
   await s.api('/api/settings', { asr: { baseURL: 'http://localhost:8000', model: 'asr' }, translation: { useAsrConnection: true, model: 'text' } }, 'PUT');
   assert.equal((await s.api('/api/sessions/' + created.body.id)).body.title, '产品评审');
+  assert.equal((await s.api('/api/sessions/' + created.body.id)).body.description, created.body.description);
   assert.equal((await s.api('/api/sessions')).body.items[0].id, created.body.id);
   const share = (await s.api('/api/sessions/' + created.body.id + '/share')).body;
   assert.equal((await s.api('/api/watch/' + new URL(share.url).pathname.split('/').at(-1))).body.status, 'ready');
@@ -40,6 +42,8 @@ test('named meetings are listed before capture; saving service settings preserve
   assert.equal(s.calls(), 0);
   assert.equal((await s.api('/api/sessions', { draft: true, title: 'x'.repeat(121) })).status, 400);
   assert.equal((await s.api('/api/sessions', { draft: true, title: {} })).status, 400);
+  for (const description of ['x'.repeat(4001), {}, null, 42]) assert.equal((await s.api('/api/sessions', { draft: true, description })).status, 400);
+  for (const size of [300, 4000]) assert.equal((await s.api('/api/sessions', { draft: true, description: '术'.repeat(size) })).body.description.length, size);
 });
 
 test('pause and continue keep one recording timeline and expose paused status to the phone', async t => {
@@ -68,13 +72,13 @@ test('pause and continue keep one recording timeline and expose paused status to
 
 function runtimeHarness() {
   let emit, captureStarts = 0, captureStops = 0, current = { id: 'initial', version: 2, status: 'ready', captions: [], segments: [] }, uploadRelease;
-  let settings = { configured: true, asr: { baseURL: 'http://localhost:8000', model: 'asr', hasApiKey: true, prompt: '原有术语' }, translation: { baseURL: 'http://localhost:9000', model: 'translate', hasApiKey: true, useAsrConnection: false } };
+  let settings = { configured: true, asr: { baseURL: 'http://localhost:8000', model: 'asr', hasApiKey: true }, translation: { baseURL: 'http://localhost:9000', model: 'translate', hasApiKey: true, useAsrConnection: false } };
   const calls = [], uploadGate = new Promise(r => { uploadRelease = r; });
   const runtime = new CaptionRuntime({
     api: async (url, options) => {
       calls.push(url);
       if (url === '/api/settings') { if (options?.data) settings = { ...settings, ...options.data }; return { ...settings }; }
-      if (url === '/api/sessions') current = { ...current, id: 'named', title: options.data.title, status: 'ready', startedAt: null };
+      if (url === '/api/sessions') current = { ...current, id: 'named', title: options.data.title, description: options.data.description, status: 'ready', startedAt: null };
       if (url.endsWith('/start')) current = { ...current, status: 'recording', startedAt: current.startedAt || '2026-10-22T01:00:00Z' };
       if (url.includes('/audio?')) { await uploadGate; return { accepted: true }; }
       if (url.endsWith('/pause')) current = { ...current, status: 'paused' };
@@ -89,8 +93,8 @@ function runtimeHarness() {
 
 test('preparing and opening a meeting never starts capture; pause drains before exposing paused, continue uses the same ID', async () => {
   const h = runtimeHarness(), r = h.runtime;
-  await r.init(); const named = await r.createMeeting('研发会'); r.openMeeting(named);
-  assert.equal(h.starts(), 0); assert.equal(r.snapshot().audio.recording, false); assert.equal(r.session.title, '研发会');
+  await r.init(); const named = await r.createMeeting('研发会', '  Claude Code 与 MCP  '); r.openMeeting(named);
+  assert.equal(h.starts(), 0); assert.equal(r.snapshot().audio.recording, false); assert.equal(r.session.title, '研发会'); assert.equal(r.session.description, 'Claude Code 与 MCP');
   await r.start(); assert.equal(h.starts(), 1);
   r.audio.accept(new Int16Array(3200).buffer);
   const pausing = r.pause(); assert.equal(h.stops(), 1); assert.equal(r.audio.recording, false);
@@ -117,7 +121,6 @@ test('each service connection, key action and sharing change drains captured aud
   const changes = [
     { asr: { baseURL: 'http://localhost:8010/custom' } }, { asr: { model: 'new-asr' } },
     { asr: { apiKey: 'replacement-test-key' } }, { asr: { clearApiKey: true } },
-    { asr: { prompt: '本次介绍 Claude Code。' } }, { asr: { prompt: '' } },
     { translation: { baseURL: 'http://localhost:9010/custom' } }, { translation: { model: 'new-translation' } },
     { translation: { apiKey: 'replacement-test-key' } }, { translation: { clearApiKey: true } },
     { translation: { useAsrConnection: true } },
@@ -139,7 +142,7 @@ test('each service connection, key action and sharing change drains captured aud
 test('saving only network access leaves active capture and the configured connections unchanged', async () => {
   const h = runtimeHarness(), r = h.runtime;
   await r.init(); await r.start(); const asr = r.settings.asr, translation = r.settings.translation;
-  await r.save({ asr: { baseURL: asr.baseURL, model: asr.model, prompt: asr.prompt }, translation: { baseURL: translation.baseURL, model: translation.model, useAsrConnection: false }, networkAddress: '192.0.2.10' });
+  await r.save({ asr: { baseURL: asr.baseURL, model: asr.model }, translation: { baseURL: translation.baseURL, model: translation.model, useAsrConnection: false }, networkAddress: '192.0.2.10' });
   assert.equal(r.audio.recording, true); assert.equal(h.stops(), 0);
   assert.equal(h.calls.some(c => c.endsWith('/pause')), false);
   r.destroy();

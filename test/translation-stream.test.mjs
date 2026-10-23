@@ -339,7 +339,8 @@ test('desktop and phone snapshots share streamed groups; end waits for validatio
   const raw = '预算未批。日期未定。', stream = sse(); let requests = 0;
   const service = createApp({ env: {}, dataDir: dir, transport: async (url, options) => {
     if (String(url).endsWith('/audio/transcriptions')) return new Response(JSON.stringify({ text: raw }));
-    const schema = JSON.parse(JSON.parse(options.body).messages[0].content.split('\n')[1].slice('只返回 JSON：'.length, -1));
+    const schemaLine = JSON.parse(options.body).messages[0].content.split('\n').find(line => line.startsWith('只返回 JSON：'));
+    const schema = JSON.parse(schemaLine.slice('只返回 JSON：'.length, -1));
     assert.equal(Object.keys(schema.cues[0])[2], 'yue');
     requests++; return stream.response;
   } });

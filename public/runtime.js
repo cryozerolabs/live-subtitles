@@ -69,11 +69,11 @@ export class CaptionRuntime {
     });
   }
 
-  async createMeeting(title) {
+  async createMeeting(title, description = '') {
     if (this.audio.busy || this.busy || this.ending || this.pausing || this.drainPromise || (this.session?.startedAt && !['ended', 'interrupted'].includes(this.session.status))) throw new Error('请先结束当前会议，再开始新会议。');
     this.busy = true; this.emit();
     try {
-      const session = await this.api('/api/sessions', { data: { version: 2, draft: true, title: String(title || '').trim() } });
+      const session = await this.api('/api/sessions', { data: { version: 2, draft: true, title: String(title || '').trim(), description: description.trim() } });
       this.userStopped = true; this.startedHere = false; this.audio.timeMs = 0; this.lastVoiceAt = 0;
       this.error = null; this.errorKind = null; this.endFailed = false; this.state = 'ready'; this.attach(session);
       return session;
@@ -254,7 +254,7 @@ export class CaptionRuntime {
     const before = this.settings;
     const changingService = ['asr', 'translation'].some(kind => {
       const next = data[kind];
-      return next && (['baseURL', 'model', 'useAsrConnection', 'prompt'].some(key => next[key] !== undefined && next[key] !== before?.[kind]?.[key]) || !!next.apiKey || next.clearApiKey === true);
+      return next && (['baseURL', 'model', 'useAsrConnection'].some(key => next[key] !== undefined && next[key] !== before?.[kind]?.[key]) || !!next.apiKey || next.clearApiKey === true);
     });
     if (changingService) {
       if (this.busy || this.audio.starting || this.ending) throw new Error('麦克风或会议正在准备、保存，请稍后再修改服务。');

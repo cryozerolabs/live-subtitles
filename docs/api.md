@@ -6,19 +6,18 @@
 
 ## 设置
 
-`GET /api/settings` 返回各组保存的连接配置。以下示例的翻译独立连接尚未设置，实际请求因 `useAsrConnection: true` 而使用识别连接：
+`GET /api/settings` 返回各组保存的连接配置。以下以已验证的蚂蚁灵配置举例，不是默认配置。翻译独立连接尚未设置，实际请求因 `useAsrConnection: true` 而使用识别连接：
 
 ```json
 {
   "asr": {
-    "baseURL": "https://api.example.com/v1",
-    "model": "speech-model",
-    "prompt": "本次介绍 Claude Code、Codex 与 MCP。",
+    "baseURL": "https://api.ant-ling.com/v1",
+    "model": "Ming-3.0-asr-tiny",
     "hasApiKey": true
   },
   "translation": {
     "baseURL": "",
-    "model": "text-model",
+    "model": "Ming-3.0-audio-flash",
     "hasApiKey": false,
     "useAsrConnection": true
   },
@@ -29,17 +28,16 @@
 }
 ```
 
-`PUT /api/settings` 更新对应分组。可写字段为 `baseURL`、`model`、`apiKey`、`clearApiKey`，以及识别分组的 `prompt`、翻译分组的 `useAsrConnection`；`networkAddress` 用于选择二维码中的局域网地址。示例：
+`PUT /api/settings` 更新对应分组。可写字段为 `baseURL`、`model`、`apiKey`、`clearApiKey`，以及翻译分组的 `useAsrConnection`；`networkAddress` 用于选择二维码中的局域网地址。示例：
 
 ```json
 {
   "asr": {
-    "baseURL": "https://api.example.com/v1",
-    "model": "speech-model",
-    "prompt": "本次介绍 Claude Code、Codex 与 MCP。"
+    "baseURL": "https://api.ant-ling.com/v1",
+    "model": "Ming-3.0-asr-tiny"
   },
   "translation": {
-    "model": "text-model",
+    "model": "Ming-3.0-audio-flash",
     "useAsrConnection": true
   }
 }
@@ -47,13 +45,12 @@
 
 未传 Key 或空白 Key 保留原值；`clearApiKey: true` 显式清除。更换来源不保留旧 Key。响应结构与 GET 相同，不回传密钥。连接和环境变量行为见 [服务配置](configuration.md)。
 
-`asr.prompt` 为全局上下文，所有会议共用，翻译同步参考。未传保持原值，空字符串清除；接受字符串，最多 4000 个 UTF-16 码元，超限返回 400。只读观看接口不返回此项。设置变更须等待已有识别与翻译处理完成；控制页面在修改服务或上下文时先暂停并排空，不自动恢复收音。
 
 ## 会议
 
 | 方法与路径 | 行为 |
 | --- | --- |
-| `POST /api/sessions` | 创建会议，正文可传 `title`、`draft: true`；创建本身不启动浏览器麦克风 |
+| `POST /api/sessions` | 创建会议，正文可传 `title`、`description`、`draft: true`；创建本身不启动浏览器麦克风 |
 | `GET /api/sessions/current` | 获取或准备当前会议，不采音 |
 | `GET /api/sessions?before=<id>&limit=30` | 按时间倒序分页，返回 `items` 与 `next` |
 | `GET /api/sessions/:id` | 当前会议快照 |
@@ -70,6 +67,10 @@
 | `GET /api/sessions/:id/download` | 下载只含 SRT 和 WAV 的会议包 ZIP |
 | `GET /api/sessions/:id/subtitles/:language` | 下载当前已定稿 SRT |
 | `DELETE /api/sessions/:id` | 正文必须为 `{"confirm":true}`，永久删除本场数据 |
+
+`title` 为会议名称，最多 120 个 UTF-16 码元；`description` 为可选描述，最多 4000 个 UTF-16 码元。两项去除首尾空白，名称为空显示“未命名会议”。主持端会议快照返回 `description`，观看快照不包含该字段。
+
+每场会议单独使用名称与描述作为识别 `prompt` 和翻译 `background`，不跨会议共享。未命名且描述为空时省略提示。读取历史不重新提交模型。
 
 会议状态为 `ready`、`recording`、`paused`、`finalizing`、`ended` 或 `interrupted`。结束操作需由界面确认后发起，API 本身不展示确认框。已保存会议不会在读取或下载时重新调用模型。
 

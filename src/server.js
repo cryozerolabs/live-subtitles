@@ -29,6 +29,7 @@ const write = (file, value) => {
   fs.renameSync(temp, file);
 };
 const isMeeting = data => data?.kind === 'meeting' && data.version === 2 && Array.isArray(data.segments) && Array.isArray(data.captions);
+const meetingContext = data => [data.title && data.title !== '未命名会议' ? '会议名称：' + data.title : '', data.description ? '会议描述：' + data.description : ''].filter(Boolean).join('\n');
 
 export function createApp({ dataDir = path.join(ROOT, 'data'), transport = fetch, disconnectMs = 15000, recordingPartBytes, env = process.env, speechDetectorFactory = createSpeechDetector, captureLeaseMs = 15000, captureNow = Date.now } = {}) {
   const deletion = new MeetingDeletion(dataDir); deletion.recover();
@@ -71,7 +72,7 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), transport = fetch
     const refusals = failures.filter(s => s.translationErrorKind === 'refusal');
     const latest = failures.findLast(s => s.translationErrorKind !== 'refusal') || failures.at(-1);
     return {
-      id: ctx.data.id, title: ctx.data.title, createdAt: ctx.data.createdAt,
+      id: ctx.data.id, title: ctx.data.title, description: ctx.data.description || '', createdAt: ctx.data.createdAt,
       createdByUser: !!ctx.data.createdByUser, status: ctx.data.status || 'ended', startedAt: ctx.data.startedAt, endedAt: ctx.data.endedAt,
       recording: summary(ctx), ingestEndMs: ctx.data.ingestEndMs || recorders.get(ctx.data.id)?.endMs || 0, saveError: ctx.saveError || null, epoch,
       update: ctx.update || 0,
@@ -136,16 +137,17 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), transport = fetch
   };
   const streaming = ctx => {
     if (ctx.asr) return;
+    const contextPrompt = meetingContext(ctx.data);
     ctx.providerRequests = { asr: 0, translation: 0 };
     const tracked = kind => (...args) => { ctx.providerRequests[kind]++; return transport(...args); };
     ctx.sentences = new SentenceBuffer({
       captions: ctx.data.captions, lane: translationLane,
-      translate: (raw, prior, options) => translations(raw, connection(settings, 'translation'), tracked('translation'), prior, { ...options, priorityLanguage: ctx.captionLanguage || 'zhHans', contextPrompt: settings.asr.prompt }),
+      translate: (raw, prior, options) => translations(raw, connection(settings, 'translation'), tracked('translation'), prior, { ...options, priorityLanguage: ctx.captionLanguage || 'zhHans', contextPrompt }),
       asrPending: () => ctx.asr?.pendingFinals > 0 || ctx.speech?.pendingMs > 0, speaking: () => ctx.asr?.speaking,
       onError: e => { ctx.error = e.message; changed(ctx); }, onChange: () => changed(ctx),
     });
     ctx.asr = new IncrementalAsr({
-      recognize: (pcm, signal) => recognize(pcm, connection(settings, 'asr'), tracked('asr'), { signal }), lane: asrLane,
+      recognize: (pcm, signal) => recognize(pcm, connection(settings, 'asr'), tracked('asr'), { signal, prompt: contextPrompt }), lane: asrLane,
       startId: ctx.data.segments.reduce((n, s) => Math.max(n, Number(s.id.slice(1)) || 0), 0),
       suppressed: id => ctx.sentences.suppressed.has(id),
       onVoice: at => ctx.sentences.voice(at),
@@ -170,8 +172,8 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), transport = fetch
       .finally(() => { ctx.draining = false; ctx.drainPromise = null; changed(ctx); });
     return ctx.drainPromise;
   };
-  const newSession = (makeCurrent = true, title = '未命名会议') => {
-    const data = { id: crypto.randomUUID(), version: 2, title, kind: 'meeting',
+  const newSession = (makeCurrent = true, title = '未命名会议', description = '') => {
+    const data = { id: crypto.randomUUID(), version: 2, title, description, kind: 'meeting',
       status: 'ready', watchToken: crypto.randomBytes(32).toString('base64url'), createdAt: new Date().toISOString(), segments: [],
       captions: [], ingestEndMs: 0, receipts: [] };
     const ctx = context(data); sessions.set(data.id, ctx); persist(ctx);
@@ -280,9 +282,11 @@ export function createApp({ dataDir = path.join(ROOT, 'data'), transport = fetch
     if (!req.body?.draft && !settingsReady(settings)) throw fail('请先完成识别与翻译服务设置。');
     if (Object.hasOwn(req.body || {}, 'title') && (typeof req.body.title !== 'string' || req.body.title.trim().length > 120)) throw fail('会议名称最多为 120 个字符。');
     const title = Object.hasOwn(req.body || {}, 'title') ? req.body.title.trim() || '未命名会议' : undefined;
+    if (Object.hasOwn(req.body || {}, 'description') && (typeof req.body.description !== 'string' || req.body.description.length > 4000)) throw fail('会议描述最多为 4000 个字符。');
+    const description = req.body?.description?.trim() || '';
     if (req.body?.version !== undefined && req.body.version !== 2) throw fail('新会议仅支持当前字幕协议。');
-    const ctx = newSession(true, title);
-    if (title !== undefined) { ctx.data.createdByUser = true; persist(ctx); }
+    const ctx = newSession(true, title, description);
+    if (title !== undefined || description) { ctx.data.createdByUser = true; persist(ctx); }
     res.status(201).json(view(ctx));
   });
   app.delete('/api/sessions/:id', (req, res) => {
