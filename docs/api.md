@@ -28,7 +28,7 @@
 }
 ```
 
-`PUT /api/settings` 更新对应分组。可写字段为 `baseURL`、`model`、`apiKey`、`clearApiKey`，以及翻译分组的 `useAsrConnection`；`networkAddress` 用于选择二维码中的局域网地址。示例：
+`PUT /api/settings` 更新对应分组。可写字段为 `baseURL`、`model`、`apiKey`，以及翻译分组的 `useAsrConnection`；`networkAddress` 用于选择二维码中的局域网地址。示例：
 
 ```json
 {
@@ -43,7 +43,7 @@
 }
 ```
 
-未传 Key 或空白 Key 保留原值；`clearApiKey: true` 显式清除。更换来源不保留旧 Key。响应结构与 GET 相同，不回传密钥。连接和环境变量行为见 [服务配置](configuration.md)。
+省略 `apiKey` 保留原值，传入空字符串或全空白字符串清除，传入非空字符串替换。更换来源不保留旧 Key。页面未编辑的掩码不会作为凭据提交。响应结构与 GET 相同，不回传密钥。连接和环境变量行为见 [服务配置](configuration.md)。
 
 
 ## 会议

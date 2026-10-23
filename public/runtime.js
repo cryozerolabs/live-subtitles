@@ -254,7 +254,7 @@ export class CaptionRuntime {
     const before = this.settings;
     const changingService = ['asr', 'translation'].some(kind => {
       const next = data[kind];
-      return next && (['baseURL', 'model', 'useAsrConnection'].some(key => next[key] !== undefined && next[key] !== before?.[kind]?.[key]) || !!next.apiKey || next.clearApiKey === true);
+      return next && (['baseURL', 'model', 'useAsrConnection'].some(key => next[key] !== undefined && next[key] !== before?.[kind]?.[key]) || (Object.hasOwn(next, 'apiKey') && (!!next.apiKey || !!before?.[kind]?.hasApiKey)));
     });
     if (changingService) {
       if (this.busy || this.audio.starting || this.ending) throw new Error('麦克风或会议正在准备、保存，请稍后再修改服务。');

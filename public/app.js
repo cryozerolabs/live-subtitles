@@ -2,8 +2,10 @@ import { Transcript, languages } from './transcript.js';
 import { openMicrophone } from './microphone.js';
 import { CaptionRuntime } from './runtime.js';
 import { VoiceMeter } from './waveform.js';
+import { ApiKeyField } from './api-key.js';
 
 const $ = id => document.getElementById(id);
+const keyFields = Object.fromEntries(['asr', 'translation'].map(kind => [kind, new ApiKeyField($(kind + '-api-key'))]));
 async function api(url, { method, data, body } = {}) {
   let response;
   try {
@@ -139,7 +141,7 @@ async function applyRoute() {
   const version = ++generation; route = readRoute();
   historyTranscript?.destroy(); historyTranscript = null; historyItem = null;
   if ($('delete-dialog').open && !meetingDeleting) $('delete-dialog').close();
-  for (const kind of ['asr', 'translation']) $(kind + '-api-key').value = '';
+  for (const field of Object.values(keyFields)) field.reset();
   $('settings-saved').hidden = true;
   const live = route.type === 'live'; $('workspace').hidden = live; $('live-screen').hidden = !live;
   for (const kind of ['new', 'settings', 'history']) $(kind + '-panel').hidden = route.type !== kind;
@@ -195,7 +197,7 @@ function fillSettings() {
   for (const kind of ['asr', 'translation']) {
     $(kind + '-base-url').value = settings[kind]?.baseURL || '';
     $(kind + '-model').value = settings[kind]?.model || '';
-    $(kind + '-api-key').value = ''; $(kind + '-clear-key').checked = false;
+    keyFields[kind].reset();
     updateKeyField(kind);
   }
   $('translation-use-asr').checked = !!settings.translation?.useAsrConnection; updateTranslationConnection();
@@ -204,38 +206,32 @@ function fillSettings() {
   $('network-address').value = settings.networkAddress || ''; $('settings-error').hidden = true;
 }
 function serviceOrigin(value) { try { return new URL(value).origin; } catch { return null; } }
-function updateKeyField(kind) {
+function updateKeyField(kind, reset = false) {
   const saved = runtime.settings?.[kind];
   const sameOrigin = !!saved?.baseURL && serviceOrigin(saved.baseURL) === serviceOrigin($(kind + '-base-url').value.trim());
   const hasKey = sameOrigin && saved?.hasApiKey;
-  const clear = $(kind + '-clear-key');
-  clear.disabled = !hasKey;
-  if (!hasKey) clear.checked = false;
-  $(kind + '-api-key').disabled = clear.checked;
-  $(kind + '-api-key').placeholder = clear.checked ? '保存后清除密钥' : hasKey ? '已保存，留空保留' : '未配置，可按服务要求填写';
-  $(kind + '-key-help').textContent = !sameOrigin && saved?.baseURL ? '更换服务来源后，旧密钥不会带到新服务。' : '留空保留已保存的密钥；无需密钥的本地服务可留空。';
+  if (reset) keyFields[kind].reset(hasKey); else keyFields[kind].update(hasKey);
 }
 function updateTranslationConnection() {
   const shared = $('translation-use-asr').checked;
   $('translation-connection').hidden = shared;
-  for (const id of ['translation-base-url', 'translation-api-key', 'translation-clear-key']) $(id).disabled = shared;
+  for (const id of ['translation-base-url', 'translation-api-key']) $(id).disabled = shared;
   if (!shared) updateKeyField('translation');
 }
 for (const kind of ['asr', 'translation']) {
   $(kind + '-base-url').addEventListener('input', () => updateKeyField(kind));
-  $(kind + '-clear-key').addEventListener('change', () => updateKeyField(kind));
 }
 $('translation-use-asr').addEventListener('change', updateTranslationConnection);
 $('settings-form').onsubmit = async event => {
   event.preventDefault(); $('settings-save').disabled = true; $('settings-error').hidden = true; $('settings-saved').hidden = true;
   try {
     const connection = kind => ({ baseURL: $(kind + '-base-url').value.trim(), model: $(kind + '-model').value.trim(),
-      ...($(kind + '-clear-key').checked ? { clearApiKey: true } : $(kind + '-api-key').value.trim() ? { apiKey: $(kind + '-api-key').value.trim() } : {}) });
+      ...keyFields[kind].patch() });
     await runtime.save({ asr: connection('asr'), translation: $('translation-use-asr').checked ? { model: $('translation-model').value.trim(), useAsrConnection: true } : { ...connection('translation'), useAsrConnection: false }, networkAddress: $('network-address').value });
     fillSettings();
     $('settings-saved').hidden = false;
   } catch (e) { $('settings-error').textContent = e.message; $('settings-error').hidden = false; }
-  finally { for (const kind of ['asr', 'translation']) $(kind + '-api-key').value = ''; $('settings-save').disabled = false; }
+  finally { for (const kind of ['asr', 'translation']) updateKeyField(kind, true); $('settings-save').disabled = false; }
 };
 async function openHistory(id, version) {
   $('history-heading').textContent = '会议记录'; $('history-recording').textContent = ''; $('history-empty').textContent = '正在读取…'; $('history-empty').hidden = false;

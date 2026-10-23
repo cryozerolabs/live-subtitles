@@ -6,8 +6,46 @@ import path from 'node:path';
 import { createApp } from './helpers/service.mjs';
 import { CaptionRuntime } from '../public/runtime.js';
 import { VoiceMeter, levelHeight } from '../public/waveform.js';
+import { ApiKeyField } from '../public/api-key.js';
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
+
+function keyInput(hasKey = false) {
+  const events = new Map(), input = { value: '', selections: 0, select() { this.selections++; }, addEventListener(type, fn) { events.set(type, fn); } };
+  const field = new ApiKeyField(input); field.reset(hasKey);
+  return { input, field, focus: () => events.get('focus')(), edit: value => { input.value = value; events.get('input')(); } };
+}
+
+test('an untouched saved key remains masked and is never submitted, including focus without editing', () => {
+  const k = keyInput(true);
+  assert.match(k.input.value, /^•+$/); assert.deepEqual(k.field.patch(), {});
+  k.focus(); assert.equal(k.input.selections, 1); assert.deepEqual(k.field.patch(), {});
+  k.field.update(false); assert.equal(k.input.value, ''); assert.deepEqual(k.field.patch(), {});
+  k.field.update(true); assert.match(k.input.value, /^•+$/); assert.deepEqual(k.field.patch(), {});
+});
+
+test('replacing or deleting a saved key uses the normal input value and discards remaining mask characters', () => {
+  const k = keyInput(true);
+  k.edit('••fixture-next-key••');
+  assert.equal(k.input.value, 'fixture-next-key'); assert.deepEqual(k.field.patch(), { apiKey: 'fixture-next-key' });
+  k.edit(''); assert.deepEqual(k.field.patch(), { apiKey: '' });
+  const other = keyInput(true); assert.deepEqual(other.field.patch(), {});
+});
+
+test('editing addresses retains an explicitly entered replacement while reset removes typed credentials', () => {
+  const k = keyInput(true);
+  k.edit('fixture-explicit-key'); k.field.update(false);
+  assert.deepEqual(k.field.patch(), { apiKey: 'fixture-explicit-key' });
+  k.field.reset(true); assert.match(k.input.value, /^•+$/); assert.deepEqual(k.field.patch(), {});
+  k.field.reset(); assert.equal(k.input.value, ''); assert.deepEqual(k.field.patch(), {});
+});
+
+test('a browser-filled value is submitted without treating the stored mask as a credential', () => {
+  const k = keyInput(true);
+  k.input.value = 'fixture-filled-key'; assert.deepEqual(k.field.patch(), { apiKey: 'fixture-filled-key' });
+  k.field.reset(true); k.input.value = ''; assert.deepEqual(k.field.patch(), { apiKey: '' });
+});
+
 async function service(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-test-'));
   let calls = 0;
@@ -120,9 +158,9 @@ test('confirming end during a pending pause waits for the last upload and never 
 test('each service connection, key action and sharing change drains captured audio before saving without resuming', async t => {
   const changes = [
     { asr: { baseURL: 'http://localhost:8010/custom' } }, { asr: { model: 'new-asr' } },
-    { asr: { apiKey: 'replacement-test-key' } }, { asr: { clearApiKey: true } },
+    { asr: { apiKey: 'replacement-test-key' } }, { asr: { apiKey: '' } },
     { translation: { baseURL: 'http://localhost:9010/custom' } }, { translation: { model: 'new-translation' } },
-    { translation: { apiKey: 'replacement-test-key' } }, { translation: { clearApiKey: true } },
+    { translation: { apiKey: 'replacement-test-key' } }, { translation: { apiKey: '' } },
     { translation: { useAsrConnection: true } },
   ];
   for (const change of changes) await t.test(JSON.stringify(change), async () => {

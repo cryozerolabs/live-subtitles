@@ -109,20 +109,19 @@ test('Base URL environment fields keep custom paths without adding v1', t => {
   assert.equal(endpoint('', 'asr'), '');
 });
 
-test('blank or omitted keys preserve credentials, explicit clear removes them and a new key replaces them', t => {
+test('omitted keys preserve credentials, empty keys clear them and new keys replace them', t => {
   const previous = fixture(t).value;
-  for (const patch of [{ model: 'renamed' }, { apiKey: '' }, { apiKey: '   ' }]) {
+  for (const patch of [{ model: 'renamed' }, {}]) {
     const next = updateSettings(previous, { asr: patch, translation: patch });
     assert.equal(next.asr.apiKey, ASR_KEY);
     assert.equal(next.translation.apiKey, TRANSLATION_KEY);
   }
-  const cleared = updateSettings(previous, { asr: { clearApiKey: true }, translation: { clearApiKey: true } });
+  const cleared = updateSettings(previous, { asr: { apiKey: '' }, translation: { apiKey: '   ' } });
   assert.equal(cleared.asr.apiKey, '');
   assert.equal(cleared.translation.apiKey, '');
   const replaced = updateSettings(previous, { asr: { apiKey: 'fixture-next-asr-key' } });
   assert.equal(replaced.asr.apiKey, 'fixture-next-asr-key');
   assert.equal(previous.asr.apiKey, ASR_KEY);
-  rejectsWithoutEcho(() => updateSettings(previous, { asr: { apiKey: ASR_KEY, clearApiKey: true } }), [ASR_KEY]);
 });
 
 test('origin changes do not carry old keys while path changes retain same-origin credentials', t => {

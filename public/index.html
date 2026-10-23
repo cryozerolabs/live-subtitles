@@ -34,27 +34,22 @@
         </form>
       </section>
       <section id="settings-panel" class="workspace-panel settings-panel" aria-labelledby="settings-heading" hidden>
-        <div class="panel-heading"><h2 id="settings-heading">设置</h2><p>连接 OpenAI 兼容服务，分别配置语音识别与文本翻译。</p></div>
+        <div class="panel-heading"><h2 id="settings-heading">设置</h2></div>
         <form id="settings-form" class="settings-content">
           <fieldset><legend>语音识别</legend>
             <p class="field-help">将麦克风音频转写为原文。服务须支持 OpenAI 兼容 Audio Transcriptions 接口。</p>
             <label for="asr-base-url">服务地址（Base URL）</label><input id="asr-base-url" type="url" required autocomplete="off" spellcheck="false" placeholder="https://api.example.com/v1" aria-describedby="asr-url-help">
             <p id="asr-url-help" class="field-help">填写服务基础地址，包含所需路径（如 /v1）；应用自动补上 /audio/transcriptions。</p>
-            <label for="asr-api-key">API Key</label><input id="asr-api-key" type="password" autocomplete="off" spellcheck="false" aria-describedby="asr-key-help">
-            <p id="asr-key-help" class="field-help">留空保留已保存的密钥；无需密钥的本地服务可留空。</p>
-            <label class="checkbox-field" for="asr-clear-key"><input id="asr-clear-key" type="checkbox">清除已保存的 API Key</label>
+            <label for="asr-api-key">API Key</label><input id="asr-api-key" type="password" autocomplete="off" spellcheck="false">
             <label for="asr-model">语音识别模型（Model ID）</label><input id="asr-model" required autocomplete="off" spellcheck="false" placeholder="填写服务商提供的语音识别模型 ID">
           </fieldset>
           <fieldset><legend>文本翻译</legend>
-            <p class="field-help">将识别后的文本译成字幕。服务须支持 OpenAI 兼容 Chat Completions 接口与 JSON 输出；支持流式时逐步显示。</p>
+            <p class="field-help">将识别后的文本译成字幕。服务须支持 OpenAI 兼容 Chat Completions 接口与 JSON 输出。</p>
             <label class="checkbox-field" for="translation-use-asr"><input id="translation-use-asr" type="checkbox">与语音识别共用 Base URL 和 API Key</label>
-            <p class="field-help">仅共用连接，翻译模型仍需单独填写。</p>
             <div id="translation-connection">
               <label for="translation-base-url">服务地址（Base URL）</label><input id="translation-base-url" type="url" required autocomplete="off" spellcheck="false" placeholder="https://api.example.com/v1" aria-describedby="translation-url-help">
               <p id="translation-url-help" class="field-help">填写服务基础地址，包含所需路径（如 /v1）；应用自动补上 /chat/completions。</p>
-              <label for="translation-api-key">API Key</label><input id="translation-api-key" type="password" autocomplete="off" spellcheck="false" aria-describedby="translation-key-help">
-              <p id="translation-key-help" class="field-help">留空保留已保存的密钥；无需密钥的本地服务可留空。</p>
-              <label class="checkbox-field" for="translation-clear-key"><input id="translation-clear-key" type="checkbox">清除已保存的 API Key</label>
+              <label for="translation-api-key">API Key</label><input id="translation-api-key" type="password" autocomplete="off" spellcheck="false">
             </div>
             <label for="translation-model">文本翻译模型（Model ID）</label><input id="translation-model" required autocomplete="off" spellcheck="false" placeholder="填写服务商提供的文本翻译模型 ID">
           </fieldset>

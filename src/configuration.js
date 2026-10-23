@@ -47,16 +47,14 @@ export function publicSettings(settings) {
 
 function updateService(previous, patch, kind) {
   if (!object(patch)) throw invalid('服务配置格式不正确。');
-  const allowed = ['baseURL', 'apiKey', 'model', 'clearApiKey', ...(kind === 'translation' ? ['useAsrConnection'] : [])];
+  const allowed = ['baseURL', 'apiKey', 'model', ...(kind === 'translation' ? ['useAsrConnection'] : [])];
   if (Object.keys(patch).some(key => !allowed.includes(key))) throw invalid('服务配置包含不支持的字段。');
   const result = { ...previous };
   if (own(patch, 'baseURL')) result.baseURL = baseURL(patch.baseURL);
   if (own(patch, 'model')) result.model = text(patch.model, '模型名');
-  for (const key of ['clearApiKey', 'useAsrConnection']) if (own(patch, key) && typeof patch[key] !== 'boolean') throw invalid(key + ' 必须为布尔值。');
+  if (own(patch, 'useAsrConnection') && typeof patch.useAsrConnection !== 'boolean') throw invalid('useAsrConnection 必须为布尔值。');
   if (kind === 'translation' && own(patch, 'useAsrConnection')) result.useAsrConnection = patch.useAsrConnection;
-  const fresh = own(patch, 'apiKey') ? apiKey(patch.apiKey) : '';
-  if (patch.clearApiKey && fresh) throw invalid('请勿同时填写和清除 API Key。');
-  result.apiKey = patch.clearApiKey ? '' : fresh || (previous.baseURL === result.baseURL || sameOrigin(previous.baseURL, result.baseURL) ? previous.apiKey : '');
+  result.apiKey = own(patch, 'apiKey') ? apiKey(patch.apiKey) : previous.baseURL === result.baseURL || sameOrigin(previous.baseURL, result.baseURL) ? previous.apiKey : '';
   return result;
 }
 
