@@ -4,7 +4,8 @@
 
 **一台电脑开启同声字幕，观众扫码选择自己的语言。**
 
-A CryoZeroLabs project · [Follow @cryozerolabs on X](https://x.com/cryozerolabs)
+[![Follow @cryozerolabs on X](https://img.shields.io/twitter/follow/cryozerolabs?style=flat)](https://x.com/cryozerolabs)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat)](LICENSE)
 
 精彩的分享，不该停在语言这一关。
 

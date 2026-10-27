@@ -4,7 +4,8 @@
 
 **Start live subtitles from one computer. Let your audience scan a QR code and follow in their own language.**
 
-A CryoZeroLabs project · [Follow @cryozerolabs on X](https://x.com/cryozerolabs)
+[![Follow @cryozerolabs on X](https://img.shields.io/twitter/follow/cryozerolabs?style=flat)](https://x.com/cryozerolabs)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat)](LICENSE)
 
 Great ideas deserve to cross language barriers.
 

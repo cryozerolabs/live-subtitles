@@ -4,7 +4,8 @@
 
 **一部電腦開啟同聲字幕，觀眾掃碼選擇自己的語言。**
 
-CryoZeroLabs 項目 · [在 X 追蹤 @cryozerolabs](https://x.com/cryozerolabs)
+[![Follow @cryozerolabs on X](https://img.shields.io/twitter/follow/cryozerolabs?style=flat)](https://x.com/cryozerolabs)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat)](LICENSE)
 
 精彩的分享，不該停在語言這一關。
 
